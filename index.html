@@ -59,16 +59,21 @@
   .brand { font-family: 'Fraunces', serif; font-weight: 600; font-size: 20px; letter-spacing: -0.01em; }
   .brand span { color: var(--copper); }
   .nav-links { display: flex; gap: 32px; font-size: 14px; font-weight: 500; }
-  .nav-links a { opacity: 0.75; transition: opacity 0.2s; }
+  .nav-links a { opacity: 0.75; transition: opacity 0.2s; white-space: nowrap; }
   .nav-links a:hover { opacity: 1; }
   .nav-cta {
     background: var(--pine); color: var(--cream);
-    padding: 10px 20px; border-radius: 999px; font-size: 14px; font-weight: 600;
+    padding: 10px 20px; border-radius: 999px; font-size: 14px; font-weight: 600; white-space: nowrap;
   }
   .nav-toggle { display: none; background: none; border: none; cursor: pointer; padding: 8px; }
   .nav-toggle span { display: block; width: 22px; height: 2px; background: var(--ink); margin: 5px 0; }
 
-  @media (max-width: 720px) {
+  @media (max-width: 900px) {
+    .nav-links { gap: 18px; font-size: 13px; }
+    .nav-cta.desktop-only { padding: 9px 16px; font-size: 13px; }
+  }
+
+  @media (max-width: 860px) {
     .nav-links, .nav-cta.desktop-only { display: none; }
     .nav-toggle { display: block; }
     .nav-mobile {
@@ -380,8 +385,11 @@
     </div>
 
     <div class="location-card reveal">
-      <div class="location-photo" style="padding:0; border-right:none;">
-        <img src="assets/lounge-jeyachandran.png" alt="RRG Lounge massage chairs at Jeyachandran, Keelkattalai" style="width:100%; height:100%; object-fit:cover; min-height:320px;">
+      <div class="location-photo" style="padding:0; border-right:none; position:relative; cursor:zoom-in; min-height:420px;" onclick="openLightbox('assets/lounge-jeyachandran.png')">
+        <img src="assets/lounge-jeyachandran.png" alt="RRG Lounge massage chairs at Jeyachandran, Keelkattalai" style="width:100%; height:100%; object-fit:cover; min-height:420px; image-rendering:auto;">
+        <div style="position:absolute; bottom:14px; right:14px; background:rgba(22,51,44,0.75); color:var(--cream); font-size:12px; font-weight:600; padding:6px 12px; border-radius:999px; display:flex; align-items:center; gap:6px;">
+          ⤢ Click to enlarge
+        </div>
       </div>
       <div class="location-info">
         <div class="tag">Now Open</div>
@@ -450,6 +458,12 @@
   </div>
 </footer>
 
+<!-- Lightbox for full-resolution photo viewing -->
+<div id="lightbox" onclick="closeLightbox(event)" style="display:none; position:fixed; inset:0; z-index:100; background:rgba(14,33,28,0.94); align-items:center; justify-content:center; padding:24px; cursor:zoom-out;">
+  <img id="lightbox-img" src="" alt="RRG Lounge full view" style="max-width:95vw; max-height:92vh; object-fit:contain; border-radius:8px; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+  <button onclick="closeLightbox(event)" style="position:absolute; top:20px; right:24px; background:rgba(241,233,216,0.12); color:var(--cream); border:1px solid rgba(241,233,216,0.3); border-radius:50%; width:40px; height:40px; font-size:18px; cursor:pointer;">✕</button>
+</div>
+
 <script>
   document.getElementById('year').textContent = new Date().getFullYear();
 
@@ -458,6 +472,21 @@
     entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('in'); });
   }, { threshold: 0.15 });
   document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  // lightbox for full-resolution photo view
+  function openLightbox(src) {
+    document.getElementById('lightbox-img').src = src;
+    document.getElementById('lightbox').style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+  }
+  function closeLightbox(e) {
+    e.stopPropagation();
+    document.getElementById('lightbox').style.display = 'none';
+    document.body.style.overflow = '';
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') document.getElementById('lightbox').style.display = 'none';
+  });
 </script>
 
 </body>
