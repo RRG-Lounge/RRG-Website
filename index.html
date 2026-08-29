@@ -179,14 +179,13 @@
 
   /* ---------- LOCATIONS ---------- */
   .location-card {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+    display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 0;
     border: 1px solid var(--line); border-radius: 20px; overflow: hidden;
     background: #fff;
   }
   #locations-list { display: flex; flex-direction: column; gap: 28px; }
   .location-photo {
     background: repeating-linear-gradient(135deg, var(--cream-2), var(--cream-2) 10px, #EAE0C9 10px, #EAE0C9 20px);
-    border-right: 1px dashed var(--pine);
     min-height: 320px;
     display: flex; align-items: center; justify-content: center;
     flex-direction: column; gap: 10px; text-align: center; padding: 24px;
@@ -208,9 +207,8 @@
     border: 1px dashed var(--line); border-radius: 14px; padding: 22px;
   }
 
-  @media (max-width: 720px) {
+  @media (max-width: 860px) {
     .location-card { grid-template-columns: 1fr; }
-    .location-photo { border-right: none; border-bottom: 1px dashed var(--pine); }
   }
 
   /* ---------- CONTACT ---------- */
@@ -249,7 +247,7 @@
 <nav class="nav">
   <div class="wrap">
     <div style="display:flex; align-items:center; gap:12px;">
-      <a href="#"><img src="assets/rrg-logo.jpeg" alt="RRG Lounge — Relax, Recharge, Go" style="height:32px; width:auto; display:block;"></a>
+      <a href="#"><img id="brand-logo" alt="RRG Lounge — Relax, Recharge, Go" style="height:32px; width:auto; display:block;"></a>
       <span style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; background:var(--copper); color:var(--cream); padding:4px 10px; border-radius:999px; white-space:nowrap;">Site in progress</span>
     </div>
     <div class="nav-links">
@@ -498,17 +496,15 @@
     const card = document.createElement('div');
     card.className = 'location-card reveal in';
     card.innerHTML = `
-      <div style="display:flex; flex-direction:column;">
-        <div class="lounge-slot" style="position:relative; min-height:320px;"></div>
-        <div class="mall-slot" style="border-top:1px dashed var(--pine); min-height:100px;"></div>
-      </div>
+      <div class="lounge-slot location-photo" style="position:relative; min-height:320px; padding:0;"></div>
       <div class="location-info">
         <div class="tag">${loc.status || 'Now Open'}</div>
         <h3>${loc.name || ''}</h3>
         <p>${loc.description || ''}</p>
         <p>${loc.address || ''}</p>
         <div class="hours">${loc.hours || ''}</div>
-      </div>`;
+      </div>
+      <div class="mall-slot location-photo" style="min-height:320px; padding:0;"></div>`;
 
     const loungeSlot = card.querySelector('.lounge-slot');
     loungeSlot.innerHTML = placeholderMarkup(`Add ${loc.id}-lounge.jpg to assets`);
@@ -525,7 +521,9 @@
     mallSlot.innerHTML = placeholderMarkup('Add mall/store exterior photo (with their logo) here');
     tryLoadImage(`assets/${loc.id}-mall`, 0, (src) => {
       if (!src) return;
-      mallSlot.innerHTML = `<img src="${src}" alt="${loc.name} exterior" style="width:100%; height:100%; object-fit:cover; min-height:100px;">`;
+      mallSlot.style.cursor = 'zoom-in';
+      mallSlot.onclick = () => openLightbox(src);
+      mallSlot.innerHTML = `<img src="${src}" alt="${loc.name} exterior" style="width:100%; height:100%; object-fit:cover; min-height:320px;">`;
     });
 
     return card;
@@ -544,6 +542,11 @@
     }
   }
   loadLocations();
+
+  // Logo: auto-detect file extension (upload assets/rrg-logo.png / .jpg / .jpeg / .webp — any works)
+  tryLoadImage('assets/rrg-logo', 0, (src) => {
+    if (src) document.getElementById('brand-logo').src = src;
+  });
 </script>
 
 </body>
