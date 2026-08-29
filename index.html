@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RRG Lounge — Relax, Recharge, Go | Chennai</title>
+<meta name="description" content="RRG Lounge brings premium automated massage chair sessions to your mall visit in Chennai. No appointment, no spa prices — just a few minutes to reset.">
+
+<!-- Canonical: set this to whichever domain you make primary once both are live -->
+<link rel="canonical" href="https://www.relaxrechargego.com/">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --pine: #16332C;
+    --pine-2: #1F4A40;
+    --pine-3: #0E211C;
+    --cream: #F1E9D8;
+    --cream-2: #E7DCC3;
+    --copper: #C1703A;
+    --copper-light: #DE9863;
+    --ink: #16332C;
+    --line: rgba(22,51,44,0.14);
+    --max: 1120px;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: 'Inter', sans-serif;
+    color: var(--ink);
+    background: var(--cream);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  h1, h2, h3, .display {
+    font-family: 'Fraunces', serif;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  em { font-style: italic; font-weight: 500; color: var(--copper); }
+  a { color: inherit; text-decoration: none; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 28px; }
+  img { max-width: 100%; display: block; }
+
+  /* ---------- NAV ---------- */
+  .nav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(241,233,216,0.9);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 72px; }
+  .brand { font-family: 'Fraunces', serif; font-weight: 600; font-size: 20px; letter-spacing: -0.01em; }
+  .brand span { color: var(--copper); }
+  .nav-links { display: flex; gap: 32px; font-size: 14px; font-weight: 500; }
+  .nav-links a { opacity: 0.75; transition: opacity 0.2s; }
+  .nav-links a:hover { opacity: 1; }
+  .nav-cta {
+    background: var(--pine); color: var(--cream);
+    padding: 10px 20px; border-radius: 999px; font-size: 14px; font-weight: 600;
+  }
+  .nav-toggle { display: none; background: none; border: none; cursor: pointer; padding: 8px; }
+  .nav-toggle span { display: block; width: 22px; height: 2px; background: var(--ink); margin: 5px 0; }
+
+  @media (max-width: 720px) {
+    .nav-links, .nav-cta.desktop-only { display: none; }
+    .nav-toggle { display: block; }
+    .nav-mobile {
+      display: none; flex-direction: column; gap: 18px;
+      padding: 20px 28px 28px; border-top: 1px solid var(--line);
+      background: var(--cream);
+    }
+    .nav-mobile.open { display: flex; }
+    .nav-mobile a { font-size: 15px; font-weight: 500; }
+  }
+
+  /* ---------- HERO ---------- */
+  .hero {
+    background: linear-gradient(180deg, var(--pine) 0%, var(--pine-3) 100%);
+    color: var(--cream);
+    padding: 100px 0 40px;
+    position: relative;
+  }
+  .hero .wrap { position: relative; z-index: 2; }
+  .eyebrow {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.14em;
+    color: var(--copper-light); font-weight: 600; margin-bottom: 20px;
+  }
+  .hero h1 {
+    font-size: clamp(44px, 7vw, 84px);
+    line-height: 0.98;
+    max-width: 780px;
+  }
+  .hero p.lead {
+    font-size: clamp(16px, 2vw, 19px);
+    max-width: 480px;
+    margin-top: 26px;
+    opacity: 0.82;
+    line-height: 1.6;
+  }
+  .hero-actions { display: flex; gap: 16px; margin-top: 40px; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 14px 28px; border-radius: 999px;
+    font-size: 14px; font-weight: 600; transition: transform 0.2s, opacity 0.2s;
+  }
+  .btn-primary { background: var(--copper); color: var(--cream); }
+  .btn-primary:hover { transform: translateY(-2px); }
+  .btn-ghost { border: 1px solid rgba(241,233,216,0.35); color: var(--cream); }
+  .btn-ghost:hover { background: rgba(241,233,216,0.08); }
+
+  /* breathing wave signature */
+  .wave-wrap { margin-top: 70px; }
+  .wave-wrap svg { width: 100%; height: auto; display: block; }
+  .wave-path {
+    fill: none; stroke: var(--copper-light); stroke-width: 2;
+    stroke-linecap: round;
+    stroke-dasharray: 1400;
+    stroke-dashoffset: 1400;
+    animation: draw 2.4s ease-out forwards 0.3s;
+  }
+  .wave-caption {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em;
+    opacity: 0.55; margin-top: 14px; display: flex; justify-content: space-between;
+  }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+
+  /* ---------- SECTION SHELL ---------- */
+  section { padding: 96px 0; }
+  .section-head { max-width: 640px; margin-bottom: 56px; }
+  .kicker {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.14em;
+    color: var(--copper); font-weight: 700; margin-bottom: 16px;
+  }
+  .section-head h2 { font-size: clamp(30px, 4vw, 46px); line-height: 1.08; }
+  .reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.7s ease, transform 0.7s ease; }
+  .reveal.in { opacity: 1; transform: translateY(0); }
+
+  /* ---------- ABOUT / VISION ---------- */
+  .about-grid {
+    display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 64px; align-items: start;
+  }
+  .about-grid p { font-size: 17px; line-height: 1.75; opacity: 0.85; margin-bottom: 18px; }
+  .pillars { display: flex; flex-direction: column; gap: 28px; }
+  .pillar { border-left: 2px solid var(--copper); padding-left: 20px; }
+  .pillar h3 { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+  .pillar p { font-size: 14.5px; opacity: 0.7; line-height: 1.6; margin: 0; }
+
+  @media (max-width: 860px) {
+    .about-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- FOUNDERS ---------- */
+  .founders { background: var(--pine); color: var(--cream); }
+  .founders .kicker { color: var(--copper-light); }
+  .founder-row { display: flex; gap: 48px; flex-wrap: wrap; margin-top: 12px; }
+  .founder-card { display: flex; gap: 18px; align-items: flex-start; max-width: 380px; }
+  .avatar {
+    width: 64px; height: 64px; border-radius: 50%; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--copper), var(--copper-light));
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Fraunces', serif; font-weight: 600; font-size: 22px; color: var(--pine-3);
+  }
+  .founder-card h4 { font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+  .founder-card p { font-size: 14.5px; opacity: 0.75; line-height: 1.6; margin: 0; }
+  .founder-quote {
+    margin-top: 56px; font-family: 'Fraunces', serif; font-style: italic; font-weight: 400;
+    font-size: clamp(20px, 2.6vw, 28px); line-height: 1.5; max-width: 720px; opacity: 0.95;
+  }
+
+  /* ---------- LOCATIONS ---------- */
+  .location-card {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+    border: 1px solid var(--line); border-radius: 20px; overflow: hidden;
+    background: #fff;
+  }
+  .location-photo {
+    background: repeating-linear-gradient(135deg, var(--cream-2), var(--cream-2) 10px, #EAE0C9 10px, #EAE0C9 20px);
+    border-right: 1px dashed var(--pine);
+    min-height: 320px;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; text-align: center; padding: 24px;
+  }
+  .location-photo .icon { font-size: 32px; opacity: 0.5; }
+  .location-photo span { font-size: 13px; font-weight: 600; opacity: 0.55; text-transform: uppercase; letter-spacing: 0.08em; }
+  .location-info { padding: 40px; display: flex; flex-direction: column; justify-content: center; }
+  .location-info .tag {
+    display: inline-block; background: var(--pine); color: var(--cream);
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 5px 12px; border-radius: 999px; margin-bottom: 18px; width: fit-content;
+  }
+  .location-info h3 { font-size: 24px; margin-bottom: 10px; }
+  .location-info p { font-size: 15px; opacity: 0.75; line-height: 1.65; margin: 0 0 6px; }
+  .location-info .hours { margin-top: 18px; font-size: 13.5px; opacity: 0.6; }
+
+  .more-locations {
+    margin-top: 28px; text-align: center; font-size: 14.5px; opacity: 0.6;
+    border: 1px dashed var(--line); border-radius: 14px; padding: 22px;
+  }
+
+  @media (max-width: 720px) {
+    .location-card { grid-template-columns: 1fr; }
+    .location-photo { border-right: none; border-bottom: 1px dashed var(--pine); }
+  }
+
+  /* ---------- CONTACT ---------- */
+  .contact { background: var(--pine-3); color: var(--cream); }
+  .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; }
+  .contact-list { display: flex; flex-direction: column; gap: 22px; margin-top: 8px; }
+  .contact-item { display: flex; gap: 16px; align-items: flex-start; }
+  .contact-item .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; opacity: 0.55; margin-bottom: 4px; }
+  .contact-item .value { font-size: 16px; font-weight: 500; }
+  .contact-item .value a:hover { color: var(--copper-light); }
+
+  form.contact-form { display: flex; flex-direction: column; gap: 14px; }
+  .contact-form input, .contact-form textarea {
+    background: rgba(241,233,216,0.06); border: 1px solid rgba(241,233,216,0.2);
+    border-radius: 10px; padding: 14px 16px; color: var(--cream); font-family: 'Inter', sans-serif;
+    font-size: 14.5px; outline: none; transition: border-color 0.2s;
+  }
+  .contact-form input:focus, .contact-form textarea:focus { border-color: var(--copper-light); }
+  .contact-form textarea { resize: vertical; min-height: 100px; }
+  .contact-form button {
+    background: var(--copper); color: var(--pine-3); border: none; border-radius: 999px;
+    padding: 14px 24px; font-weight: 700; font-size: 14.5px; cursor: pointer; margin-top: 6px;
+    transition: transform 0.2s;
+  }
+  .contact-form button:hover { transform: translateY(-2px); }
+
+  @media (max-width: 720px) { .contact-grid { grid-template-columns: 1fr; gap: 40px; } }
+
+  /* ---------- FOOTER ---------- */
+  footer { background: var(--pine-3); color: rgba(241,233,216,0.5); padding: 28px 0; border-top: 1px solid rgba(241,233,216,0.1); }
+  footer .wrap { display: flex; justify-content: space-between; align-items: center; font-size: 13px; flex-wrap: wrap; gap: 10px; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <div style="display:flex; align-items:center; gap:12px;">
+      <a href="#" class="brand">RRG <span>Lounge</span></a>
+      <span style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; background:var(--copper); color:var(--cream); padding:4px 10px; border-radius:999px; white-space:nowrap;">Site in progress</span>
+    </div>
+    <div class="nav-links">
+      <a href="#about">About</a>
+      <a href="#story">Our Story</a>
+      <a href="#locations">Locations</a>
+      <a href="#contact">Contact</a>
+    </div>
+    <a href="#locations" class="nav-cta desktop-only">Find a Lounge</a>
+    <button class="nav-toggle" onclick="document.querySelector('.nav-mobile').classList.toggle('open')" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+  <div class="nav-mobile">
+    <a href="#about">About</a>
+    <a href="#story">Our Story</a>
+    <a href="#locations">Locations</a>
+    <a href="#contact">Contact</a>
+  </div>
+</nav>
+
+<!-- ================= HERO ================= -->
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">RRG Lounge — Chennai</div>
+    <h1>Relax. <em>Recharge.</em> Go.</h1>
+    <p class="lead">Full-body massage chairs and foot massagers, right inside the mall you're already in. No appointment, no spa prices — just a few minutes to reset before you carry on with your day.</p>
+    <div class="hero-actions">
+      <a href="#locations" class="btn btn-primary">Find a lounge near you</a>
+      <a href="#about" class="btn btn-ghost">Our story</a>
+    </div>
+
+    <div class="wave-wrap">
+      <svg viewBox="0 0 1000 120" preserveAspectRatio="none">
+        <path class="wave-path" d="M0,60 C20,10 40,110 60,60 C80,10 100,110 120,60 C140,20 160,100 180,60 C200,25 220,95 240,60 C260,30 280,90 300,60 C320,35 340,85 360,60 C380,38 400,82 420,58 C440,42 460,74 480,58 C500,45 520,70 540,58 C560,48 580,66 600,57 C620,50 640,62 660,57 C680,52 700,60 720,57 C740,54 760,58 780,57 C800,55 820,58 840,57 C860,56 880,58 900,57 C920,56.5 940,57.5 960,57 C975,56.8 990,57.2 1000,57" />
+      </svg>
+      <div class="wave-caption">
+        <span>Before RRG</span>
+        <span>After RRG</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ================= ABOUT / VISION ================= -->
+<section id="about">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="kicker">Why we exist</div>
+      <h2>Premium wellness shouldn't need a spa day.</h2>
+    </div>
+    <div class="about-grid reveal">
+      <div>
+        <p>Most people only get real, dedicated relaxation on the rare day they book a spa appointment. Everyone else just powers through — tired shoulders on the way to pick up groceries, sore feet halfway through a mall visit, a stiff neck after the drive in.</p>
+        <p>RRG Lounge was built to close that gap. We place premium automated massage chairs in places you already go, so a proper reset is a five-minute decision, not a planned occasion. No booking, no membership pressure, no spa pricing — just walk up, sit down, and go again feeling better.</p>
+      </div>
+      <div class="pillars">
+        <div class="pillar">
+          <h3>Accessible</h3>
+          <p>Inside the malls and spaces you already visit — no separate trip required.</p>
+        </div>
+        <div class="pillar">
+          <h3>Affordable</h3>
+          <p>Priced for a quick, regular reset — not a once-a-year indulgence.</p>
+        </div>
+        <div class="pillar">
+          <h3>On your time</h3>
+          <p>No appointments. Sit down when you need it, for as long as you need it.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= THE STORY ================= -->
+<section id="story">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="kicker">How it started</div>
+      <h2>Shopping tires people out — just not always the same person, or at the same moment.</h2>
+    </div>
+    <div class="about-grid reveal">
+      <div>
+        <p>Anyone who's spent real time in a mall knows this feeling, whichever side of it they're on. Sometimes one person is deep in choosing and comparing while someone else waits — standing in the aisle, in the billing queue, on the stairs because every chair is taken. Sometimes it's a family trip, with grandparents or kids waiting their turn while others shop. And sometimes there's no "waiting" person at all — you're shopping alone, so absorbed in deciding that you don't notice the tiredness building, until the billing is done and your legs suddenly remember every hour you were on your feet.</p>
+        <p>Either way, two or three hours in, someone is exhausted — during the trip or right after it. That's when the trip gets cut short: "let's just finish up," and whole sections of the mall go unvisited.</p>
+        <p>Nobody designs for this. Malls plan for shopping. Nobody plans for the tiredness shopping leaves behind — whoever it lands on, and whenever it shows up.</p>
+      </div>
+      <div class="pillars">
+        <div class="pillar">
+          <h3>The pattern</h3>
+          <p>Deciding and waiting cost energy differently — and it can be anyone's turn, alone, as a couple, or as a family.</p>
+        </div>
+        <div class="pillar">
+          <h3>The cost</h3>
+          <p>That tiredness — whether it hits during the trip or right after — shortens it and sours the mood.</p>
+        </div>
+        <div class="pillar">
+          <h3>The fix</h3>
+          <p>A full-body chair for a proper reset, or a quick foot massager if it's just tired legs.</p>
+        </div>
+      </div>
+    </div>
+    <p class="founder-quote reveal" style="color: var(--pine); margin-top: 48px;">A relaxed shopper — or family — means a longer, better mood shopping trip for everyone. That's the whole idea behind RRG Lounge: a few minutes in a massage chair or foot massager, so tiredness becomes part of the experience to fix, not the reason to cut the trip short.</p>
+  </div>
+</section>
+
+<!-- ================= FOUNDERS ================= -->
+<section id="founders" class="founders">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="kicker">Our story</div>
+      <h2>Built by people who shop here too.</h2>
+    </div>
+    <div class="founder-row reveal">
+      <div class="founder-card">
+        <div class="avatar">S</div>
+        <div>
+          <h4>Sharmila Banu S</h4>
+          <p>Founder. Started RRG Lounge to bring a proper, premium reset within reach of everyday mall visits — not just occasional spa trips.</p>
+        </div>
+      </div>
+    </div>
+    <p class="founder-quote reveal">"We weren't the only ones feeling it — every mall we visited had the same tired faces waiting near the billing counter. If it was that common, it deserved a real solution, not just a bench."</p>
+  </div>
+</section>
+
+<!-- ================= LOCATIONS ================= -->
+<section id="locations">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="kicker">Find us</div>
+      <h2>Currently open in Chennai.</h2>
+    </div>
+
+    <div class="location-card reveal">
+      <div class="location-photo" style="padding:0; border-right:none;">
+        <img src="assets/lounge-jeyachandran.png" alt="RRG Lounge massage chairs at Jeyachandran, Keelkattalai" style="width:100%; height:100%; object-fit:cover; min-height:320px;">
+      </div>
+      <div class="location-info">
+        <div class="tag">Now Open</div>
+        <h3>Jeyachandran Mall, Chennai</h3>
+        <p>Our first RRG Lounge — a row of massage chairs and a foot massager set up for a quick, no-appointment reset while you're out shopping.</p>
+        <p>5th Floor, c/o Jeyachandran,<br>33, Medavakkam Main Road,<br>Keelkattalai, Chennai – 600117</p>
+        <div class="hours">Open daily · 10:00 AM – 10:00 PM</div>
+      </div>
+    </div>
+
+    <div class="more-locations reveal">More RRG Lounge locations opening soon across Chennai.</div>
+  </div>
+</section>
+
+<!-- ================= CONTACT ================= -->
+<section id="contact" class="contact">
+  <div class="wrap">
+    <div class="contact-grid">
+      <div class="reveal">
+        <div class="kicker">Get in touch</div>
+        <h2 style="font-size: clamp(28px, 3.6vw, 40px); margin-bottom: 20px;">Questions, feedback, or want a lounge at your mall?</h2>
+        <div class="contact-list">
+          <div class="contact-item">
+            <div>
+              <div class="label">Phone</div>
+              <div class="value"><a href="tel:+91XXXXXXXXXX">+91 XXXXX XXXXX</a></div>
+            </div>
+          </div>
+          <div class="contact-item">
+            <div>
+              <div class="label">Email</div>
+              <div class="value"><a href="mailto:hello@relaxrechargego.com">hello@relaxrechargego.com</a></div>
+            </div>
+          </div>
+          <div class="contact-item">
+            <div>
+              <div class="label">WhatsApp</div>
+              <div class="value"><a href="https://wa.me/91XXXXXXXXXX" target="_blank" rel="noopener">Message us directly</a></div>
+            </div>
+          </div>
+          <div class="contact-item">
+            <div>
+              <div class="label">Visit</div>
+              <div class="value">5th Floor, c/o Jeyachandran,<br>33, Medavakkam Main Road,<br>Keelkattalai, Chennai – 600117</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="reveal">
+        <!-- This form doesn't submit anywhere yet — it opens the visitor's email app with a pre-filled message. Wire it to a real form backend later if needed. -->
+        <form class="contact-form" action="mailto:hello@relaxrechargego.com" method="post" enctype="text/plain">
+          <input type="text" name="name" placeholder="Your name" required>
+          <input type="email" name="email" placeholder="Your email" required>
+          <textarea name="message" placeholder="Your message" required></textarea>
+          <button type="submit">Send message</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>© <span id="year"></span> RRG Lounge — Relax • Recharge • Go</div>
+    <div>Chennai, India</div>
+  </div>
+</footer>
+
+<script>
+  document.getElementById('year').textContent = new Date().getFullYear();
+
+  // reveal-on-scroll
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('in'); });
+  }, { threshold: 0.15 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>
