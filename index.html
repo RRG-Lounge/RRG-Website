@@ -56,8 +56,6 @@
     border-bottom: 1px solid var(--line);
   }
   .nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 72px; }
-  .brand { font-family: 'Fraunces', serif; font-weight: 600; font-size: 20px; letter-spacing: -0.01em; }
-  .brand span { color: var(--copper); }
   .nav-links { display: flex; gap: 32px; font-size: 14px; font-weight: 500; }
   .nav-links a { opacity: 0.75; transition: opacity 0.2s; white-space: nowrap; }
   .nav-links a:hover { opacity: 1; }
@@ -185,6 +183,7 @@
     border: 1px solid var(--line); border-radius: 20px; overflow: hidden;
     background: #fff;
   }
+  #locations-list { display: flex; flex-direction: column; gap: 28px; }
   .location-photo {
     background: repeating-linear-gradient(135deg, var(--cream-2), var(--cream-2) 10px, #EAE0C9 10px, #EAE0C9 20px);
     border-right: 1px dashed var(--pine);
@@ -250,7 +249,7 @@
 <nav class="nav">
   <div class="wrap">
     <div style="display:flex; align-items:center; gap:12px;">
-      <a href="#" class="brand">RRG <span>Lounge</span></a>
+      <a href="#"><img src="assets/rrg-logo.jpeg" alt="RRG Lounge — Relax, Recharge, Go" style="height:32px; width:auto; display:block;"></a>
       <span style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; background:var(--copper); color:var(--cream); padding:4px 10px; border-radius:999px; white-space:nowrap;">Site in progress</span>
     </div>
     <div class="nav-links">
@@ -385,21 +384,7 @@
       <h2>Currently open in Chennai.</h2>
     </div>
 
-    <div class="location-card reveal">
-      <div class="location-photo" style="padding:0; border-right:none; position:relative; cursor:zoom-in; min-height:420px;" onclick="openLightbox('assets/lounge-jeyachandran.png')">
-        <img src="assets/lounge-jeyachandran.png" alt="RRG Lounge massage chairs at Jeyachandran, Keelkattalai" style="width:100%; height:100%; object-fit:cover; min-height:420px; image-rendering:auto;">
-        <div style="position:absolute; bottom:14px; right:14px; background:rgba(22,51,44,0.75); color:var(--cream); font-size:12px; font-weight:600; padding:6px 12px; border-radius:999px; display:flex; align-items:center; gap:6px;">
-          ⤢ Click to enlarge
-        </div>
-      </div>
-      <div class="location-info">
-        <div class="tag">Now Open</div>
-        <h3>Jeyachandran Mall, Chennai</h3>
-        <p>Our first RRG Lounge — a row of massage chairs and a foot massager set up for a quick, no-appointment reset while you're out shopping.</p>
-        <p>5th Floor, c/o Jeyachandran,<br>33, Medavakkam Main Road,<br>Keelkattalai, Chennai – 600117</p>
-        <div class="hours">Open daily · 10:00 AM – 10:00 PM</div>
-      </div>
-    </div>
+    <div id="locations-list"></div>
 
     <div class="more-locations reveal">More RRG Lounge locations opening soon across Chennai.</div>
   </div>
@@ -454,7 +439,7 @@
 
 <footer>
   <div class="wrap">
-    <div>© <span id="year"></span> RRG Lounge — Relax • Recharge • Go</div>
+    <div>© <span id="year"></span> RRG Lounge — Relax • Recharge • Go<br><span style="opacity:0.7; font-size:12px;">Operated by Relax Recharge Go Wellness</span></div>
     <div>Chennai, India</div>
   </div>
 </footer>
@@ -488,6 +473,77 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') document.getElementById('lightbox').style.display = 'none';
   });
+
+  // ---------- Self-service Locations engine ----------
+  // Add a new location: (1) drop photos named  <id>-lounge.jpg  and  <id>-mall.jpg  (or .png/.jpeg/.webp)
+  // into the assets folder, (2) add one entry to locations.json with the same "id". No code editing needed.
+  const PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
+
+  function tryLoadImage(basePath, i, onDone) {
+    if (i >= PHOTO_EXTENSIONS.length) { onDone(null); return; }
+    const testImg = new Image();
+    const candidate = `${basePath}.${PHOTO_EXTENSIONS[i]}`;
+    testImg.onload = () => onDone(candidate);
+    testImg.onerror = () => tryLoadImage(basePath, i + 1, onDone);
+    testImg.src = candidate;
+  }
+
+  function placeholderMarkup(text) {
+    return `<div style="background:repeating-linear-gradient(135deg, var(--cream-2), var(--cream-2) 10px, #EAE0C9 10px, #EAE0C9 20px); width:100%; height:100%; min-height:inherit; display:flex; align-items:center; justify-content:center; padding:12px; text-align:center;">
+      <span style="font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; opacity:0.55;">${text}</span>
+    </div>`;
+  }
+
+  function buildLocationCard(loc) {
+    const card = document.createElement('div');
+    card.className = 'location-card reveal in';
+    card.innerHTML = `
+      <div style="display:flex; flex-direction:column;">
+        <div class="lounge-slot" style="position:relative; min-height:320px;"></div>
+        <div class="mall-slot" style="border-top:1px dashed var(--pine); min-height:100px;"></div>
+      </div>
+      <div class="location-info">
+        <div class="tag">${loc.status || 'Now Open'}</div>
+        <h3>${loc.name || ''}</h3>
+        <p>${loc.description || ''}</p>
+        <p>${loc.address || ''}</p>
+        <div class="hours">${loc.hours || ''}</div>
+      </div>`;
+
+    const loungeSlot = card.querySelector('.lounge-slot');
+    loungeSlot.innerHTML = placeholderMarkup(`Add ${loc.id}-lounge.jpg to assets`);
+    tryLoadImage(`assets/${loc.id}-lounge`, 0, (src) => {
+      if (!src) return;
+      loungeSlot.style.cursor = 'zoom-in';
+      loungeSlot.onclick = () => openLightbox(src);
+      loungeSlot.innerHTML = `
+        <img src="${src}" alt="RRG Lounge at ${loc.name}" style="width:100%; height:100%; object-fit:cover; min-height:320px;">
+        <div style="position:absolute; bottom:14px; right:14px; background:rgba(22,51,44,0.75); color:var(--cream); font-size:12px; font-weight:600; padding:6px 12px; border-radius:999px;">⤢ Click to enlarge</div>`;
+    });
+
+    const mallSlot = card.querySelector('.mall-slot');
+    mallSlot.innerHTML = placeholderMarkup('Add mall/store exterior photo (with their logo) here');
+    tryLoadImage(`assets/${loc.id}-mall`, 0, (src) => {
+      if (!src) return;
+      mallSlot.innerHTML = `<img src="${src}" alt="${loc.name} exterior" style="width:100%; height:100%; object-fit:cover; min-height:100px;">`;
+    });
+
+    return card;
+  }
+
+  async function loadLocations() {
+    const container = document.getElementById('locations-list');
+    try {
+      const res = await fetch('locations.json');
+      const locations = await res.json();
+      container.innerHTML = '';
+      locations.forEach(loc => container.appendChild(buildLocationCard(loc)));
+    } catch (err) {
+      container.innerHTML = '<p style="opacity:0.6;">Could not load locations.json — check it\'s valid JSON and uploaded alongside index.html.</p>';
+      console.error('locations.json load error:', err);
+    }
+  }
+  loadLocations();
 </script>
 
 </body>
