@@ -24,7 +24,7 @@
     --copper-light: #DE9863;
     --ink: #16332C;
     --line: rgba(22,51,44,0.14);
-    --max: 1120px;
+    --max: 1360px;
   }
 
   * { box-sizing: border-box; }
@@ -247,7 +247,7 @@
 <nav class="nav">
   <div class="wrap">
     <div style="display:flex; align-items:center; gap:12px;">
-      <a href="#"><img id="brand-logo" alt="RRG Lounge — Relax, Recharge, Go" style="height:32px; width:auto; display:block;"></a>
+      <a href="#"><img id="brand-logo" alt="RRG Lounge — Relax, Recharge, Go" style="height:46px; width:auto; display:block;"></a>
       <span style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; background:var(--copper); color:var(--cream); padding:4px 10px; border-radius:999px; white-space:nowrap;">Site in progress</span>
     </div>
     <div class="nav-links">
@@ -512,8 +512,9 @@
       if (!src) return;
       loungeSlot.style.cursor = 'zoom-in';
       loungeSlot.onclick = () => openLightbox(src);
+      loungeSlot.style.background = 'var(--cream-2)';
       loungeSlot.innerHTML = `
-        <img src="${src}" alt="RRG Lounge at ${loc.name}" style="width:100%; height:100%; object-fit:cover; min-height:320px;">
+        <img src="${src}" alt="RRG Lounge at ${loc.name}" style="width:100%; height:100%; object-fit:contain; min-height:320px;">
         <div style="position:absolute; bottom:14px; right:14px; background:rgba(22,51,44,0.75); color:var(--cream); font-size:12px; font-weight:600; padding:6px 12px; border-radius:999px;">⤢ Click to enlarge</div>`;
     });
 
@@ -523,7 +524,8 @@
       if (!src) return;
       mallSlot.style.cursor = 'zoom-in';
       mallSlot.onclick = () => openLightbox(src);
-      mallSlot.innerHTML = `<img src="${src}" alt="${loc.name} exterior" style="width:100%; height:100%; object-fit:cover; min-height:320px;">`;
+      mallSlot.style.background = 'var(--cream-2)';
+      mallSlot.innerHTML = `<img src="${src}" alt="${loc.name} exterior" style="width:100%; height:100%; object-fit:contain; min-height:320px;">`;
     });
 
     return card;
