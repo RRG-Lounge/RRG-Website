@@ -94,7 +94,7 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge" };
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "" };
 let sessionsToday = [], cashCountsToday = [], paymentSplitsToday = [], adjustmentsToday = [];
 let unsubs = [];
 let currentTab = "operations";
@@ -299,6 +299,7 @@ async function buildApp(){
     <div class="tabs">
       <div class="tab active" data-tab="operations">Operations</div>
       <div class="tab" data-tab="receipts">Receipts</div>
+      <div class="tab" data-tab="mdshare">Mall Share</div>
     </div>
     <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
 
@@ -332,7 +333,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge" };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "" };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     render();
@@ -361,6 +362,7 @@ async function buildApp(){
 
 function render(){
   if (currentTab === "receipts") { renderReceiptsTab(); return; }
+  if (currentTab === "mdshare") { renderMallShareTab(); return; }
   renderOperationsTab();
 }
 
@@ -800,6 +802,380 @@ function renderReceiptsTable(){
     if (inv) exportReceiptPDFSimple(invoiceToSaleObject(inv));
   }));
 }
+
+/* ========================= MALL SHARE TAB (view/export only) =========================
+   Same read-only scope already proven for role "mall_admin" in the main dashboard: Overview,
+   Daily Performance Summary, Revenue Share Report, Settlement Report. No Log a Settlement, no
+   Settlement History -- those stay internal to RRG Lounge's own dashboard.
+   Simplified from the source dashboard in one deliberate way: the cash-reconciliation
+   "recorded vs actual (bank-matched) vs variance" system is NOT ported here, because the real
+   money figures (Revenue/GST/Mall Share/Owner Share) are computed from RECORDED amounts either
+   way -- reconciliation only ever affected a variance column, never the actual owed amount. */
+
+function dmyShort(dateStr){
+  const [y,m,d] = dateStr.split("-");
+  return `${d}-${m}-${y.slice(2)}`;
+}
+
+let mallShareSessions = [], mallShareAdjustments = [], mallShareSplits = [], mallShareSettlements = [];
+let mallShareLoaded = false;
+
+async function loadMallShareData(){
+  const [sessSnap, adjSnap, splitSnap, settleSnap] = await Promise.all([
+    fsDb.collection("sessions").get(),
+    fsDb.collection("invoiceAdjustments").get(),
+    fsDb.collection("paymentSplits").get(),
+    fsDb.collection("shareSettlements").get()
+  ]);
+  mallShareSessions = sessSnap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+  mallShareAdjustments = adjSnap.docs.map(d => d.data());
+  mallShareSplits = splitSnap.docs.map(d => d.data());
+  mallShareSettlements = settleSnap.docs.map(d => d.data());
+  mallShareLoaded = true;
+}
+function msAdjustmentFor(invoiceNo){ return mallShareAdjustments.find(a => a.invoiceNo === invoiceNo) || null; }
+function msSplitFor(invoiceNo){ return mallShareSplits.find(p => p.invoiceNo === invoiceNo) || null; }
+
+function computeMdSummary(from, to){
+  const rows = mallShareSessions.filter(s => s.date >= from && s.date <= to);
+  const unitsUsed = new Set(rows.map(s => s.chairName).filter(Boolean)).size;
+  let totalRevenue = rows.reduce((a,s) => a + effectiveRevenue(s), 0);
+
+  const pkgAgg = {}; const pkgOrder = [];
+  rows.forEach(s => {
+    const key = cartItemName(s.chairName, s.packageLabel, s.unitType);
+    if (!pkgAgg[key]) { pkgAgg[key] = { count: 0, revenue: 0 }; pkgOrder.push(key); }
+    pkgAgg[key].count++;
+    pkgAgg[key].revenue += effectiveRevenue(s);
+  });
+
+  const payAgg = { UPI: 0, Cash: 0, Card: 0, Pending: 0 };
+  const seenSplitInvoices = new Set();
+  rows.forEach(s => {
+    const rev = effectiveRevenue(s);
+    if (rev <= 0) return;
+    if (s.method === "Split") {
+      if (!s.invoiceNo || seenSplitInvoices.has(s.invoiceNo)) return;
+      seenSplitInvoices.add(s.invoiceNo);
+      const split = msSplitFor(s.invoiceNo);
+      if (split) split.splits.forEach(row => { payAgg[row.method] = (payAgg[row.method] || 0) + row.amount; });
+      return;
+    }
+    if (!(s.method in payAgg)) payAgg[s.method] = 0;
+    payAgg[s.method] += rev;
+  });
+
+  const seenAdjInvoices = new Set();
+  rows.forEach(s => {
+    if (!s.invoiceNo || seenAdjInvoices.has(s.invoiceNo)) return;
+    const adj = msAdjustmentFor(s.invoiceNo);
+    if (!adj) return;
+    seenAdjInvoices.add(s.invoiceNo);
+    totalRevenue += adj.amount;
+    if (!pkgAgg[adj.label]) { pkgAgg[adj.label] = { count: 0, revenue: 0 }; pkgOrder.push(adj.label); }
+    pkgAgg[adj.label].count++;
+    pkgAgg[adj.label].revenue += adj.amount;
+    payAgg[adj.method] = (payAgg[adj.method] || 0) + adj.amount;
+  });
+
+  const mdSharePercent = liveConfig.mdSharePercent;
+  const mdShare = totalRevenue * (mdSharePercent / 100);
+  const ownerShare = totalRevenue - mdShare;
+  return { totalSessions: rows.length, unitsUsed, totalRevenue, pkgAgg, pkgOrder, payAgg, mdSharePercent, mdShare, ownerShare };
+}
+
+// Same money math the dashboard uses -- recorded amounts, not a bank-reconciled "actual" figure
+// (see file header note above for why that's correct, not a simplification of the real number).
+function paymentMethodFinal(rec){
+  const totalRecorded = ["UPI","Cash","Card","Pending"].reduce((a,m) => a + (rec.payAgg[m] || 0), 0);
+  const gstRegistered = !!liveConfig.gstEnabled;
+  const gstRate = liveConfig.gstRate || 0;
+  const baseRevenue = gstRegistered ? totalRecorded / (1 + gstRate/100) : totalRecorded;
+  const gstAmount = gstRegistered ? totalRecorded - baseRevenue : 0;
+  const finalMdShare = baseRevenue * (rec.mdSharePercent / 100);
+  const finalOwnerShare = baseRevenue - finalMdShare;
+  return { finalTotalRevenue: totalRecorded, gstRegistered, gstRate, baseRevenue, gstAmount, finalMdShare, finalOwnerShare };
+}
+function buildAdhocRec(from, to){
+  const s = computeMdSummary(from, to);
+  return { periodFrom: from, periodTo: to, totalSessions: s.totalSessions, unitsUsed: s.unitsUsed, pkgOrder: s.pkgOrder, pkgAgg: s.pkgAgg, payAgg: s.payAgg, totalRevenue: s.totalRevenue, mdSharePercent: s.mdSharePercent, mdShareAmount: s.mdShare, ownerShareAmount: s.ownerShare };
+}
+function mallShareForRange(from, to){
+  if (from > to) return 0;
+  return paymentMethodFinal(buildAdhocRec(from, to)).finalMdShare;
+}
+function settledAmountForRange(from, to){
+  let total = 0;
+  for (const r of mallShareSettlements) {
+    if (r.status !== "transferred") continue;
+    const oFrom = r.periodFrom > from ? r.periodFrom : from;
+    const oTo = r.periodTo < to ? r.periodTo : to;
+    if (oFrom > oTo) continue;
+    const fullOwedForSettlement = mallShareForRange(r.periodFrom, r.periodTo);
+    const ratio = fullOwedForSettlement > 0 ? Math.min(1, (r.mdShareAmount || 0) / fullOwedForSettlement) : 0;
+    total += mallShareForRange(oFrom, oTo) * ratio;
+  }
+  return total;
+}
+function unsettledAmountForRange(from, to){
+  const raw = mallShareForRange(from, to) - settledAmountForRange(from, to);
+  const rounded = Math.round(raw * 100) / 100;
+  return rounded > 1 ? rounded : 0;
+}
+function isRangeFullySettled(from, to){ return unsettledAmountForRange(from, to) < 0.5; }
+function latestCoveringSettlement(from, to){
+  const covering = mallShareSettlements.filter(r => r.status === "transferred" && !(to < r.periodFrom || from > r.periodTo)).sort((a,b) => (b.transferDate||"").localeCompare(a.transferDate||""));
+  return covering[0] || null;
+}
+function settlementsInBusinessPeriod(from, to){
+  return mallShareSettlements.filter(r => r.status === "transferred" && !(r.periodTo < from || r.periodFrom > to)).sort((a,b) => (a.periodFrom||"").localeCompare(b.periodFrom||""));
+}
+
+// Adds our logo (left) and the mall's logo (right) to a jsPDF doc, reusing the SAME <img>
+// elements already loaded in the top bar -- no separate base64 config needed.
+function addPdfLogos(doc, y, pageWidth){
+  const logoH = 13;
+  const rrgImg = document.getElementById("rrgLogoImg");
+  const mallImg = document.getElementById("mallLogoImg");
+  let used = false;
+  if (rrgImg && rrgImg.style.display !== "none" && rrgImg.naturalWidth) {
+    const w = logoH * (rrgImg.naturalWidth / rrgImg.naturalHeight);
+    try { doc.addImage(rrgImg, "PNG", 14, y, w, logoH); used = true; } catch(e) {}
+  }
+  if (mallImg && mallImg.style.display !== "none" && mallImg.naturalWidth) {
+    const w = logoH * (mallImg.naturalWidth / mallImg.naturalHeight);
+    try { doc.addImage(mallImg, "PNG", pageWidth - 14 - w, y, w, logoH); used = true; } catch(e) {}
+  }
+  return used ? y + logoH + 5 : y;
+}
+
+function exportRevenueShareStatementPDF(rec){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const pageWidth = 210;
+  let y = addPdfLogos(doc, 12, pageWidth);
+  doc.setFontSize(15); doc.setFont("helvetica","bold");
+  doc.text("Revenue Share Statement", 14, y);
+  doc.setFont("helvetica","normal"); doc.setFontSize(10);
+  doc.text(pdfSafeText(liveConfig.businessName), pageWidth - 14, y, { align: "right" }); y += 6;
+  doc.setFontSize(9);
+  doc.text(`Period: ${dmyShort(rec.periodFrom)} to ${dmyShort(rec.periodTo)}`, 14, y);
+  doc.text(`Generated: ${dmy()} ${timeStr()}`, pageWidth - 14, y, { align: "right" }); y += 5;
+  if (liveConfig.mdName) { doc.text(`Prepared for: ${pdfSafeText(liveConfig.mdName)}`, 14, y); y += 5; }
+  y += 3;
+
+  doc.autoTable({ startY: y, body: [["Units Used", String(rec.unitsUsed), "Total Sessions", String(rec.totalSessions)]], styles: { fontSize: 10 }, columnStyles: { 0: { fontStyle: "bold" }, 2: { fontStyle: "bold" } }, theme: "plain" });
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, head: [["Package", "Sessions", "Revenue"]], body: (rec.pkgOrder||[]).map(k => [pdfSafeText(k), rec.pkgAgg[k].count, fmtMoneyPDF(rec.pkgAgg[k].revenue)]), styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] } });
+
+  const fin = paymentMethodFinal(rec);
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 3,
+    head: [["Payment Method", "Amount"]],
+    body: ["UPI","Cash","Card","Pending"].map(m => [m, fmtMoneyPDF(rec.payAgg[m]||0)]),
+    foot: [["Total", fmtMoneyPDF(fin.finalTotalRevenue)]],
+    styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }, footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" }
+  });
+
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 6,
+    body: [
+      [fin.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", fmtMoneyPDF(fin.finalTotalRevenue)],
+      ...(fin.gstRegistered ? [[`GST (${fin.gstRate}%)`, fmtMoneyPDF(fin.gstAmount)], ["Base Revenue (excl. GST)", fmtMoneyPDF(fin.baseRevenue)]] : []),
+      [`Mall Share (${rec.mdSharePercent}%${fin.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(fin.finalMdShare)],
+      [`RRG Lounge Share (${100-rec.mdSharePercent}%${fin.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(fin.finalOwnerShare)]
+    ],
+    styles: { fontSize: 11, fontStyle: "bold" }, theme: "plain"
+  });
+  doc.save(`Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}.pdf`);
+}
+function exportRevenueShareStatementExcel(rec){
+  const fin = paymentMethodFinal(rec);
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    [`Revenue Share Statement \u2014 ${liveConfig.businessName}`],
+    [`Period: ${rec.periodFrom} to ${rec.periodTo}`], []
+  ]);
+  XLSX.utils.sheet_add_json(ws, (rec.pkgOrder||[]).map(k => ({ Package: k, Sessions: rec.pkgAgg[k].count, Revenue: rec.pkgAgg[k].revenue })), { origin: -1 });
+  XLSX.utils.sheet_add_aoa(ws, [[], ["Total Revenue", fin.finalTotalRevenue], [`Mall Share (${rec.mdSharePercent}%)`, fin.finalMdShare], [`RRG Lounge Share (${100-rec.mdSharePercent}%)`, fin.finalOwnerShare]], { origin: -1 });
+  XLSX.utils.book_append_sheet(wb, ws, "Revenue Share");
+  XLSX.writeFile(wb, `Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}.xlsx`);
+}
+function exportSettlementReportPDF(from, to, settlements){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const pageWidth = 210;
+  let y = addPdfLogos(doc, 12, pageWidth);
+  doc.setFontSize(16); doc.setFont("helvetica","bold");
+  doc.text("Settlement Report", pageWidth/2, y, { align: "center" }); y += 7;
+  doc.setFont("helvetica","normal"); doc.setFontSize(10);
+  doc.text(pdfSafeText(liveConfig.businessName), pageWidth/2, y, { align: "center" }); y += 5;
+  doc.text(`Settlements covering business period ${dmyShort(from)} to ${dmyShort(to)}`, pageWidth/2, y, { align: "center" }); y += 5;
+  doc.text(`Generated: ${dmy()} ${timeStr()}`, pageWidth/2, y, { align: "center" }); y += 8;
+  doc.autoTable({
+    startY: y,
+    head: [["Period Covered", "Transfer Date", "Mode", "From", "To (Name)", "To (Account No.)", "Reference", "Amount"]],
+    body: settlements.map(r => [`${dmyShort(r.periodFrom)}-${dmyShort(r.periodTo)}`, dmyShort(r.transferDate), r.transferMethod||"-", r.transferredFrom||"-", r.transferredToName||"-", r.transferredToNumber||"-", r.transferReference||"-", fmtMoneyPDF(r.mdShareAmount)]),
+    foot: [["","","","","","","TOTAL", fmtMoneyPDF(settlements.reduce((a,r) => a + r.mdShareAmount, 0))]],
+    styles: { fontSize: 8.5, cellPadding: 2 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }, footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" }
+  });
+  if (!settlements.length) { doc.setFontSize(10); doc.text("No settlements cover any part of this business period.", 14, y + 10); }
+  doc.save(`Settlement_Report_${from}_to_${to}.pdf`);
+}
+function exportSettlementReportExcel(from, to, settlements){
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([[`Settlement Report \u2014 Business Period: ${from} to ${to}`], []]);
+  XLSX.utils.sheet_add_json(ws, settlements.map(r => ({ "Period Covered": `${r.periodFrom} to ${r.periodTo}`, "Transfer Date": r.transferDate, Mode: r.transferMethod||"-", From: r.transferredFrom||"-", "To (Name)": r.transferredToName||"-", "To (Account No.)": r.transferredToNumber||"-", Reference: r.transferReference||"-", Amount: r.mdShareAmount })), { origin: -1 });
+  XLSX.utils.sheet_add_aoa(ws, [["","","","","","","TOTAL", settlements.reduce((a,r) => a + r.mdShareAmount, 0)]], { origin: -1 });
+  XLSX.utils.book_append_sheet(wb, ws, "Settlement Report");
+  XLSX.writeFile(wb, `Settlement_Report_${from}_to_${to}.xlsx`);
+}
+
+async function renderMallShareTab(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  el.classList.remove("op-grid");
+  el.innerHTML = `<p class="panel-help">Loading\u2026</p>`;
+  if (!mallShareLoaded) {
+    try { await loadMallShareData(); }
+    catch (e) { el.innerHTML = `<p class="panel-help">Couldn't load Mall Share data: ${escapeHtml(e.message)}</p>`; return; }
+  }
+  const dates = mallShareSessions.map(s => s.date).sort();
+  const earliest = dates[0] || todayStr();
+  const todayS = todayStr();
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Mall Share \u2014 Overview</div>
+      <table class="data-table">
+        <tr><td>Total Settled to Mall (All-Time)</td><td id="msOverviewSettled">\u2014</td></tr>
+        <tr><td>Total Outstanding (All-Time)</td><td id="msOverviewOutstanding">\u2014</td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Daily Performance Summary (Copy-Paste Message)</div>
+      <p class="panel-help">Pick a date, then copy and paste directly into WhatsApp or email. Cumulative always runs from your first day of business through the selected date.</p>
+      <div class="btn-group"><div class="filter-field">Date<input type="date" id="dpsDate" value="${todayS}"></div></div>
+      <textarea id="dpsOutput" readonly style="width:100%; min-height:260px; font-family:monospace; font-size:13px; background:#0f0f0f; color:#e6be50; border:1px solid #444; border-radius:6px; padding:12px;"></textarea>
+      <button class="btn btn-primary btn-small" id="dpsCopyBtn" style="margin-top:10px;">Copy to Clipboard</button>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Revenue Share Report (Daily / Any Range)</div>
+      <p class="panel-help">Generate the statement for any date or range \u2014 what you'd share with the mall on a normal day.</p>
+      <div class="btn-group">
+        <div class="filter-field">From<input type="date" id="rsrFrom" value="${todayS}"></div>
+        <div class="filter-field">To<input type="date" id="rsrTo" value="${todayS}"></div>
+        <button class="btn btn-outline btn-small" id="rsrToday">Today</button>
+        <button class="btn btn-outline btn-small" id="rsrYesterday">Yesterday</button>
+        <button class="btn btn-outline btn-small" id="rsrWeek">This Week</button>
+        <button class="btn btn-outline btn-small" id="rsrMonth">This Month</button>
+      </div>
+      <div id="rsrPreview"></div>
+      <button class="btn btn-primary btn-small" id="rsrExportPdfBtn" style="margin-top:10px;">Export PDF</button>
+      <button class="btn btn-outline btn-small" id="rsrExportExcelBtn" style="margin-top:10px;">Export Excel</button>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Settlement Report</div>
+      <p class="panel-help">A clean list of settlements covering a given period \u2014 for whenever the mall asks for a settlement report.</p>
+      <div class="btn-group">
+        <div class="filter-field">From<input type="date" id="srFrom" value="${todayS}"></div>
+        <div class="filter-field">To<input type="date" id="srTo" value="${todayS}"></div>
+        <button class="btn btn-outline btn-small" id="srLast1Month">Last 1 Month</button>
+        <button class="btn btn-outline btn-small" id="srLast3Months">Last 3 Months</button>
+        <button class="btn btn-outline btn-small" id="srLast6Months">Last 6 Months</button>
+        <button class="btn btn-outline btn-small" id="srLast1Year">Last 1 Year</button>
+        <button class="btn btn-outline btn-small" id="srAll">All-Time</button>
+      </div>
+      <button class="btn btn-outline btn-small" id="srExportPdfBtn">Export PDF</button>
+      <button class="btn btn-outline btn-small" id="srExportExcelBtn">Export Excel</button>
+    </div>
+  `;
+
+  document.getElementById("msOverviewSettled").textContent = fmtMoney(settledAmountForRange(earliest, todayS));
+  document.getElementById("msOverviewOutstanding").textContent = fmtMoney(unsettledAmountForRange(earliest, todayS));
+
+  function renderDpsOutput(){
+    const date = document.getElementById("dpsDate").value || todayS;
+    const dayFin = paymentMethodFinal(buildAdhocRec(date, date));
+    const daySummary = computeMdSummary(date, date);
+    const cumFin = paymentMethodFinal(buildAdhocRec(earliest, date));
+    const cumSummary = computeMdSummary(earliest, date);
+    const cumSettled = settledAmountForRange(earliest, date);
+    const cumBalance = unsettledAmountForRange(earliest, date);
+    const dateObj = new Date(date);
+    const dayLabel = dateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    const earliestObj = new Date(earliest);
+    const cumFromLabel = earliestObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+    const cumToLabel = dateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+    const mdPct = liveConfig.mdSharePercent;
+    const ownerPct = 100 - mdPct;
+    document.getElementById("dpsOutput").value = `Greetings Sir,
+
+Please find RRG Lounge's performance summary:
+
+Today's (${dayLabel}) Performance
+
+Revenue: ${fmtMoney(dayFin.finalTotalRevenue)}
+Sessions: ${daySummary.totalSessions}
+Units Utilized: ${daySummary.unitsUsed}
+Mall Share (${mdPct}%): ${fmtMoney(dayFin.finalMdShare)}
+RRG Lounge Share (${ownerPct}%): ${fmtMoney(dayFin.finalOwnerShare)}
+
+Cumulative Performance (${cumFromLabel} \u2013 ${cumToLabel})
+
+Revenue: ${fmtMoney(cumFin.finalTotalRevenue)}
+Sessions: ${cumSummary.totalSessions}
+Mall Share (${mdPct}%): ${fmtMoney(cumFin.finalMdShare)}
+RRG Lounge Share (${ownerPct}%): ${fmtMoney(cumFin.finalOwnerShare)}
+
+Settled: ${fmtMoney(cumSettled)}
+Balance to Settle: ${fmtMoney(cumBalance)}
+
+Thank you.`;
+  }
+  renderDpsOutput();
+  document.getElementById("dpsDate").addEventListener("change", renderDpsOutput);
+  document.getElementById("dpsCopyBtn").addEventListener("click", async () => {
+    const text = document.getElementById("dpsOutput").value;
+    try { await navigator.clipboard.writeText(text); } catch(e) {}
+    const btn = document.getElementById("dpsCopyBtn");
+    const original = btn.textContent; btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  });
+
+  function renderRsrPreview(){
+    const from = document.getElementById("rsrFrom").value || earliest;
+    const to = document.getElementById("rsrTo").value || todayS;
+    const fin = paymentMethodFinal(buildAdhocRec(from, to));
+    const settled = isRangeFullySettled(from, to);
+    const covering = settled ? latestCoveringSettlement(from, to) : null;
+    const settledWhy = covering ? `<p class="panel-help">Covered by settlement logged for ${dmyShort(covering.periodFrom)} to ${dmyShort(covering.periodTo)} (${escapeHtml(covering.transferMethod||"")}, ${dmyShort(covering.transferDate)}${covering.transferReference ? ", Ref: " + escapeHtml(covering.transferReference) : ""}).</p>` : "";
+    document.getElementById("rsrPreview").innerHTML = `
+      <table class="data-table">
+        <tr><td>Period</td><td>${dmyShort(from)} to ${dmyShort(to)}</td></tr>
+        <tr><td>Total Revenue</td><td>${fmtMoney(fin.finalTotalRevenue)}</td></tr>
+        <tr><td>Mall Share (${fin.finalTotalRevenue ? Math.round(fin.finalMdShare/fin.baseRevenue*100) : liveConfig.mdSharePercent}%)</td><td>${fmtMoney(fin.finalMdShare)}</td></tr>
+        <tr><td>Settlement Status</td><td>${settled ? "\u2705 Settled" : "\u26A0 Pending"}</td></tr>
+      </table>${settledWhy}`;
+  }
+  renderRsrPreview();
+  document.getElementById("rsrFrom").addEventListener("change", renderRsrPreview);
+  document.getElementById("rsrTo").addEventListener("change", renderRsrPreview);
+  document.getElementById("rsrToday").addEventListener("click", () => { document.getElementById("rsrFrom").value = todayS; document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrYesterday").addEventListener("click", () => { const y = new Date(); y.setDate(y.getDate()-1); const ys = todayStrFromDate(y); document.getElementById("rsrFrom").value = ys; document.getElementById("rsrTo").value = ys; renderRsrPreview(); });
+  document.getElementById("rsrWeek").addEventListener("click", () => { const now = new Date(); const ws = new Date(now.getFullYear(), now.getMonth(), now.getDate()-now.getDay()); document.getElementById("rsrFrom").value = todayStrFromDate(ws); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrMonth").addEventListener("click", () => { const now = new Date(); document.getElementById("rsrFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1)); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrExportPdfBtn").addEventListener("click", () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementPDF(buildAdhocRec(from, to)); });
+  document.getElementById("rsrExportExcelBtn").addEventListener("click", () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementExcel(buildAdhocRec(from, to)); });
+
+  document.getElementById("srLast1Month").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-1, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast3Months").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-3, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast6Months").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-6, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast1Year").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear()-1, now.getMonth(), now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srAll").addEventListener("click", () => { document.getElementById("srFrom").value = earliest; document.getElementById("srTo").value = todayS; });
+  document.getElementById("srExportPdfBtn").addEventListener("click", () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportPDF(from, to, settlementsInBusinessPeriod(from, to)); });
+  document.getElementById("srExportExcelBtn").addEventListener("click", () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportExcel(from, to, settlementsInBusinessPeriod(from, to)); });
+}
+function todayStrFromDate(d){ return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
 
 window.addEventListener("DOMContentLoaded", () => {
   fbAuth.onAuthStateChanged(async (user) => {
