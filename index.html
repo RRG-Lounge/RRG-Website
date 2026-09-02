@@ -24,7 +24,7 @@
     --copper-light: #DE9863;
     --ink: #16332C;
     --line: rgba(22,51,44,0.14);
-    --max: 1360px;
+    --max: min(94vw, 1600px);
   }
 
   * { box-sizing: border-box; }
@@ -473,17 +473,22 @@
   });
 
   // ---------- Self-service Locations engine ----------
-  // Add a new location: (1) drop photos named  <id>-lounge.jpg  and  <id>-mall.jpg  (or .png/.jpeg/.webp)
+  // Add a new location: (1) drop photos named  <id>-lounge.webp  and  <id>-mall.webp  (or .jpg/.jpeg/.png)
   // into the assets folder, (2) add one entry to locations.json with the same "id". No code editing needed.
-  const PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
+  // Tip: .webp loads much faster than .png/.jpg for the same visual quality — export new photos as .webp when possible.
+  const PHOTO_EXTENSIONS = ['webp', 'jpg', 'jpeg', 'png'];
 
   function tryLoadImage(basePath, i, onDone) {
-    if (i >= PHOTO_EXTENSIONS.length) { onDone(null); return; }
-    const testImg = new Image();
-    const candidate = `${basePath}.${PHOTO_EXTENSIONS[i]}`;
-    testImg.onload = () => onDone(candidate);
-    testImg.onerror = () => tryLoadImage(basePath, i + 1, onDone);
-    testImg.src = candidate;
+    // Checks all extensions at once (not one-at-a-time) so a missing file never delays loading the real one.
+    let settled = false;
+    let remaining = PHOTO_EXTENSIONS.length;
+    PHOTO_EXTENSIONS.forEach((ext) => {
+      const testImg = new Image();
+      const candidate = `${basePath}.${ext}`;
+      testImg.onload = () => { if (!settled) { settled = true; onDone(candidate); } };
+      testImg.onerror = () => { remaining--; if (!settled && remaining === 0) { settled = true; onDone(null); } };
+      testImg.src = candidate;
+    });
   }
 
   function placeholderMarkup(text) {
