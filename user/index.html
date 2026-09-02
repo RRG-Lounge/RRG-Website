@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RRG Lounge — Mall Admin Portal</title>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #121212; color: #eee; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  #root { max-width: 720px; margin: 0 auto; min-height: 100vh; }
+  .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .login-card { width: 100%; max-width: 380px; background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 24px; }
+  .login-brand { font-size: 20px; font-weight: 700; color: #e6be50; text-align: center; margin-bottom: 4px; }
+  .login-sub { text-align: center; color: #999; font-size: 13px; margin-bottom: 20px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; color: #ccc; margin-bottom: 4px; }
+  .field input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #444; background: #0f0f0f; color: #eee; font-size: 16px; }
+  .btn { width: 100%; padding: 14px; border-radius: 8px; border: none; background: #e6be50; color: #1a1a1a; font-weight: 700; font-size: 16px; cursor: pointer; }
+  .btn:disabled { opacity: 0.5; }
+  .login-error { color: #ff8080; font-size: 13px; margin-top: 10px; text-align: center; min-height: 16px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; padding: 20px 16px 8px; }
+  .topbar b { color: #e6be50; font-size: 18px; }
+  .topbar button { background: transparent; border: 1px solid #555; color: #ccc; padding: 8px 14px; border-radius: 6px; }
+  .content { padding: 8px 16px 40px; }
+  .panel { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+  .panel-title { font-size: 16px; font-weight: 700; color: #e6be50; margin-bottom: 4px; }
+  .panel-help { font-size: 12px; color: #999; margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { padding: 7px 4px; text-align: left; border-bottom: 1px solid #262626; }
+  th { color: #999; font-size: 12px; text-transform: uppercase; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot-red { background: #e0745e; } .dot-amber { background: #e0a87e; } .dot-green { background: #7ee08c; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+"use strict";
+
+// This is a deliberately minimal, self-contained, READ-ONLY page -- built as its own file rather
+// than reusing the full dashboard specifically so its source can safely sit in a public repo if
+// needed (e.g. embedded into the relaxrechargego.com website): it contains no checkout, pricing,
+// or write logic at all, nothing beyond what a Mall Admin is already meant to see. The actual
+// security boundary is real Firebase Auth + Firestore Rules (server-side, role-checked) -- NOT
+// keeping this file's source hidden. Critically: nothing on this page loads or renders until a
+// real login (Staff ID + PIN) succeeds AND the account's role is verified to be mall_admin --
+// unlike the older dashboard file, there is no bootstrap/auto-sign-in of any kind here.
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyA6BnYGNx3hKNcSxHgN9Wpyz6LkB_MUKq4",
+  authDomain: "rrg-lounge-os.firebaseapp.com",
+  projectId: "rrg-lounge-os",
+  storageBucket: "rrg-lounge-os.firebasestorage.app",
+  messagingSenderId: "1071966836969",
+  appId: "1:1071966836969:web:e433f87d2d05748e573878"
+};
+firebase.initializeApp(FIREBASE_CONFIG);
+const fbAuth = firebase.auth();
+const fsDb = firebase.firestore();
+
+const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {} };
+let sessionsToday = [], cashCountsToday = [], paymentSplitsToday = [], adjustmentsToday = [];
+let unsubs = [];
+
+function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+function fmtMoney(n){ return "\u20B9" + Math.round(n||0).toLocaleString("en-IN"); }
+function todayStr(){ const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
+function fmtMMSS(totalSec){ const s = Math.max(0, totalSec); const m = Math.floor(s/60); const r = s%60; return String(m).padStart(2,"0") + ":" + String(r).padStart(2,"0"); }
+function unitTypeOf(name){ if (liveConfig.unitTypes && liveConfig.unitTypes[name]) return liveConfig.unitTypes[name]; return name.startsWith("Leg") ? "Leg" : "Chair"; }
+function activeChairOrder(){ const disabled = liveConfig.disabledUnits || []; return (liveConfig.chairOrder || []).filter(c => !disabled.includes(c)); }
+
+function sessionEffectiveEndTs(s){
+  const base = s.startTs + s.durationMin * 60000 + (s.pausedTotalMs || 0);
+  return s.pauseStartedAt ? (base + (Date.now() - s.pauseStartedAt)) : base;
+}
+function getRunningSession(chairName){
+  const rows = sessionsToday.filter(s => s.chairName === chairName && s.status === "running");
+  if (!rows.length) return null;
+  return rows.reduce((latest, s) => sessionEffectiveEndTs(s) > sessionEffectiveEndTs(latest) ? s : latest);
+}
+function chairAwaitingAcknowledgment(chairName){
+  return sessionsToday.some(s => s.chairName === chairName && s.needsAcknowledgment);
+}
+function latestUnacknowledgedForChair(chairName){
+  const rows = sessionsToday.filter(s => s.chairName === chairName && s.needsAcknowledgment);
+  if (!rows.length) return null;
+  return rows.reduce((a,b) => (a.endTs > b.endTs ? a : b));
+}
+function isChairInCart(){ return false; } // this page has no cart/checkout at all -- never true here
+function adjustmentFor(invoiceNo){ return adjustmentsToday.find(a => a.invoiceNo === invoiceNo) || null; }
+function paymentSplitFor(invoiceNo){ return paymentSplitsToday.find(p => p.invoiceNo === invoiceNo) || null; }
+function collectedAmount(s){
+  if (s.status === "cancelled") return (s.refunded || s.paymentStatus === "pending") ? 0 : s.amount;
+  return s.paymentStatus === "paid" ? s.amount : 0;
+}
+function effectiveRevenue(s){
+  if (s.status === "cancelled") return (s.refunded || s.paymentStatus === "pending") ? 0 : s.amount;
+  return s.amount;
+}
+function adjustmentsTotalForSessions(sessions){
+  const seen = new Set(); let total = 0;
+  sessions.forEach(s => {
+    if (s.invoiceNo && !seen.has(s.invoiceNo)) {
+      seen.add(s.invoiceNo);
+      const adj = adjustmentFor(s.invoiceNo);
+      if (adj) total += adj.amount;
+    }
+  });
+  return total;
+}
+function paymentMethodTotals(){
+  const totals = { Cash: { amount: 0, count: 0 }, UPI: { amount: 0, count: 0 }, Card: { amount: 0, count: 0 } };
+  const seenInvoices = new Set();
+  for (const s of sessionsToday) {
+    const amt = collectedAmount(s);
+    if (amt <= 0) continue;
+    const invKey = s.invoiceNo || ("noinv-" + s.id);
+    const firstTime = !seenInvoices.has(invKey);
+    if (firstTime) seenInvoices.add(invKey);
+    if (s.method === "Split") {
+      if (!s.invoiceNo || !firstTime) continue;
+      const split = paymentSplitFor(s.invoiceNo);
+      if (split) split.splits.forEach(row => {
+        if (!totals[row.method]) totals[row.method] = { amount: 0, count: 0 };
+        totals[row.method].amount += row.amount;
+        totals[row.method].count += 1;
+      });
+      continue;
+    }
+    if (!totals[s.method]) totals[s.method] = { amount: 0, count: 0 };
+    if (!firstTime) continue; // count each invoice once, even with multiple line items
+    totals[s.method].amount += amt;
+    totals[s.method].count += 1;
+  }
+  return totals;
+}
+
+function buildLogin(errorMsg){
+  unsubs.forEach(u => u()); unsubs = [];
+  document.getElementById("root").innerHTML = `
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="login-brand">RRG Lounge</div>
+        <div class="login-sub">Mall Admin Portal</div>
+        <div class="field"><label>Staff ID</label><input id="loginId" autocapitalize="off"></div>
+        <div class="field"><label>PIN</label><input id="loginPin" type="password" inputmode="numeric"></div>
+        <button class="btn" id="loginBtn">Login</button>
+        <div class="login-error">${errorMsg ? escapeHtml(errorMsg) : ""}</div>
+      </div>
+    </div>`;
+  document.getElementById("loginBtn").addEventListener("click", doLogin);
+  document.getElementById("loginPin").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+}
+
+async function doLogin(){
+  const staffId = document.getElementById("loginId").value.trim();
+  const pin = document.getElementById("loginPin").value;
+  if (!staffId || !pin) { buildLogin("Enter your Staff ID and PIN."); return; }
+  const btn = document.getElementById("loginBtn");
+  btn.disabled = true;
+  try {
+    const cred = await fbAuth.signInWithEmailAndPassword(`${staffId}@rrglounge.local`, pin);
+    const token = await cred.user.getIdTokenResult(true);
+    if (token.claims.active !== true) { await fbAuth.signOut(); buildLogin("This account has been disabled."); return; }
+    if (token.claims.role !== "mall_admin") { await fbAuth.signOut(); buildLogin("This login isn't a Mall Admin account. This page is for Mall Admin access only."); return; }
+    await buildApp();
+  } catch (e) {
+    let msg = "Couldn't sign in. Please try again.";
+    if (e.code === "auth/wrong-password" || e.code === "auth/invalid-credential" || e.code === "auth/invalid-login-credentials") msg = "Incorrect PIN.";
+    else if (e.code === "auth/user-not-found") msg = "Staff ID not found.";
+    else if (e.code === "auth/network-request-failed") msg = "No internet connection.";
+    buildLogin(msg);
+  }
+}
+
+async function buildApp(){
+  document.getElementById("root").innerHTML = `
+    <div class="topbar"><b>RRG Lounge \u2014 Mall Admin View</b><button id="logoutBtn">Logout</button></div>
+    <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    unsubs.forEach(u => u()); unsubs = [];
+    await fbAuth.signOut();
+    buildLogin();
+  });
+
+  const today = todayStr();
+  const invoicePrefixQuery = (collectionName) => fsDb.collection(collectionName)
+    .where("invoiceNo", ">=", "RRG-FY").where("invoiceNo", "<", "RRG-FZ"); // narrows to this year's invoices; filtered further client-side by date below
+
+  unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
+    const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {} };
+    render();
+  }));
+  unsubs.push(fsDb.collection("sessions").where("date", "==", today).onSnapshot(snap => {
+    sessionsToday = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+    render();
+  }));
+  unsubs.push(fsDb.collection("cashCounts").where("date", "==", today).onSnapshot(snap => {
+    cashCountsToday = snap.docs.map(d => d.data());
+    render();
+  }));
+  // paymentSplits/invoiceAdjustments aren't dated directly -- keyed by invoiceNo, which embeds
+  // the date (e.g. RRG-FY26-09-01-004), so today's slice is found by prefix match instead of a
+  // full-collection read.
+  const invPrefix = `RRG-FY${today.slice(2,4)}-${today.slice(5,7)}-${today.slice(8,10)}`;
+  unsubs.push(fsDb.collection("paymentSplits").where("invoiceNo", ">=", invPrefix).where("invoiceNo", "<", invPrefix + "\uf8ff").onSnapshot(snap => {
+    paymentSplitsToday = snap.docs.map(d => d.data());
+    render();
+  }));
+  unsubs.push(fsDb.collection("invoiceAdjustments").where("invoiceNo", ">=", invPrefix).where("invoiceNo", "<", invPrefix + "\uf8ff").onSnapshot(snap => {
+    adjustmentsToday = snap.docs.map(d => d.data());
+    render();
+  }));
+}
+
+function render(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  const today = todayStr();
+
+  const rows = activeChairOrder().map(chairName => {
+    const running = getRunningSession(chairName);
+    if (running) {
+      const remainSec = Math.max(0, Math.round((sessionEffectiveEndTs(running) - Date.now())/1000));
+      const paused = !!running.pauseStartedAt;
+      return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-red"></span>Running${paused ? " (Paused)" : ""}</td><td>${running.durationMin}m</td><td>${fmtMMSS(remainSec)}</td></tr>`;
+    }
+    if (chairAwaitingAcknowledgment(chairName)) {
+      const s = latestUnacknowledgedForChair(chairName);
+      const overdueSec = Math.max(0, Math.round((Date.now() - s.endTs) / 1000));
+      return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-red"></span>\u23f0 Time's Up (${fmtMMSS(overdueSec)} ago)</td><td>${s.durationMin}m</td><td>-</td></tr>`;
+    }
+    return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-green"></span>Available</td><td>-</td><td>-</td></tr>`;
+  }).join("");
+
+  const completed = sessionsToday.filter(s => s.status === "completed").length;
+  const runningCount = sessionsToday.filter(s => s.status === "running").length;
+  const revenue = sessionsToday.reduce((a,s) => a + effectiveRevenue(s), 0) + adjustmentsTotalForSessions(sessionsToday);
+  const methodTotals = paymentMethodTotals();
+  const opening = cashCountsToday.find(c => c.type === "opening");
+  const closing = cashCountsToday.find(c => c.type === "closing");
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Live Chair Status</div>
+      <p class="panel-help">View-only.</p>
+      <table><thead><tr><th>Unit</th><th>Status</th><th>Package</th><th>Remaining</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Today's Summary</div>
+      <table>
+        <tr><td>Customers Today</td><td>${sessionsToday.length}</td></tr>
+        <tr><td>Running Sessions</td><td>${runningCount}</td></tr>
+        <tr><td>Completed Sessions</td><td>${completed}</td></tr>
+        <tr><td><b>Today's Revenue</b></td><td><b>${fmtMoney(revenue)}</b></td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Payment Method Breakdown \u2014 Today</div>
+      <table>
+        <thead><tr><th>Method</th><th>Transactions</th><th>Amount</th></tr></thead>
+        <tbody>
+          <tr><td>Cash</td><td>${methodTotals.Cash.count}</td><td>${fmtMoney(methodTotals.Cash.amount)}</td></tr>
+          <tr><td>UPI</td><td>${methodTotals.UPI.count}</td><td>${fmtMoney(methodTotals.UPI.amount)}</td></tr>
+          <tr><td>Card</td><td>${methodTotals.Card.count}</td><td>${fmtMoney(methodTotals.Card.amount)}</td></tr>
+          <tr><td><b>Total Collected</b></td><td><b>${methodTotals.Cash.count + methodTotals.UPI.count + methodTotals.Card.count}</b></td><td><b>${fmtMoney(methodTotals.Cash.amount + methodTotals.UPI.amount + methodTotals.Card.amount)}</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Cash Register \u2014 ${today}</div>
+      <table>
+        <tr><td>Opening Float</td><td>${opening ? fmtMoney(opening.total) : "\u2014 not entered yet"}</td></tr>
+        <tr><td>Closing Count</td><td>${closing ? fmtMoney(closing.total) : "\u2014 not entered yet"}</td></tr>
+        <tr><td>Variance</td><td>${closing ? (closing.variance === 0 ? "Matched" : (closing.variance > 0 ? "Over " + fmtMoney(closing.variance) : "Short " + fmtMoney(Math.abs(closing.variance)))) : "\u2014"}</td></tr>
+      </table>
+    </div>
+  `;
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  fbAuth.onAuthStateChanged(async (user) => {
+    if (!user) { buildLogin(); return; }
+    try {
+      const token = await user.getIdTokenResult(true);
+      if (token.claims.active !== true || token.claims.role !== "mall_admin") { await fbAuth.signOut(); buildLogin(); return; }
+      await buildApp();
+    } catch (e) { await fbAuth.signOut(); buildLogin(); }
+  });
+});
+</script>
+</body>
+</html>
