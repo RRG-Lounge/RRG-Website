@@ -95,7 +95,7 @@ const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
 let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "" };
-let sessionsToday = [], cashCountsToday = [], paymentSplitsToday = [], adjustmentsToday = [];
+let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [];
 let unsubs = [];
 let currentTab = "operations";
 
@@ -161,6 +161,24 @@ function currentStaffName(){
   const staffId = email ? email.split("@")[0] : "";
   const rec = (liveConfig.staff || []).find(s => s.staffId === staffId);
   return (rec && rec.name) ? rec.name : staffId;
+}
+
+// Generic "show it's working" wrapper for any button whose click kicks off something that isn't
+// instant (PDF/Excel generation, opening a print window) -- disables the button and swaps its
+// label to "Processing..." for the duration, restores it after, even if the work throws.
+async function withBusyButton(btn, fn){
+  if (!btn) { await fn(); return; }
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Processing\u2026";
+  try {
+    await fn();
+  } catch (e) {
+    alert("Something went wrong: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
@@ -342,10 +360,6 @@ async function buildApp(){
     sessionsToday = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
     render();
   }));
-  unsubs.push(fsDb.collection("cashCounts").where("date", "==", today).onSnapshot(snap => {
-    cashCountsToday = snap.docs.map(d => d.data());
-    render();
-  }));
   // paymentSplits/invoiceAdjustments aren't dated directly -- keyed by invoiceNo, which embeds
   // the date (e.g. RRG-FY26-09-01-004), so today's slice is found by prefix match instead of a
   // full-collection read.
@@ -391,8 +405,6 @@ function renderOperationsTab(){
   const runningCount = sessionsToday.filter(s => s.status === "running").length;
   const revenue = sessionsToday.reduce((a,s) => a + effectiveRevenue(s), 0) + adjustmentsTotalForSessions(sessionsToday);
   const methodTotals = paymentMethodTotals();
-  const opening = cashCountsToday.find(c => c.type === "opening");
-  const closing = cashCountsToday.find(c => c.type === "closing");
 
   el.innerHTML = `
     <div class="panel">
@@ -419,14 +431,6 @@ function renderOperationsTab(){
           <tr><td>Card</td><td>${methodTotals.Card.count}</td><td>${fmtMoney(methodTotals.Card.amount)}</td></tr>
           <tr><td><b>Total Collected</b></td><td><b>${methodTotals.Cash.count + methodTotals.UPI.count + methodTotals.Card.count}</b></td><td><b>${fmtMoney(methodTotals.Cash.amount + methodTotals.UPI.amount + methodTotals.Card.amount)}</b></td></tr>
         </tbody>
-      </table>
-    </div>
-    <div class="panel">
-      <div class="panel-title">Cash Register \u2014 ${today}</div>
-      <table>
-        <tr><td>Opening Float</td><td>${opening ? fmtMoney(opening.total) : "\u2014 not entered yet"}</td></tr>
-        <tr><td>Closing Count</td><td>${closing ? fmtMoney(closing.total) : "\u2014 not entered yet"}</td></tr>
-        <tr><td>Variance</td><td>${closing ? (closing.variance === 0 ? "Matched" : (closing.variance > 0 ? "Over " + fmtMoney(closing.variance) : "Short " + fmtMoney(Math.abs(closing.variance)))) : "\u2014"}</td></tr>
       </table>
     </div>
   `;
@@ -738,8 +742,8 @@ async function renderReceiptsTab(){
     document.getElementById("rFrom").value = todayS; document.getElementById("rTo").value = todayS;
     refetchAndRenderReceipts();
   });
-  document.getElementById("rExcelBtn").addEventListener("click", exportReceiptsExcel);
-  document.getElementById("rPdfBtn").addEventListener("click", exportReceiptsPDFBulk);
+  document.getElementById("rExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => exportReceiptsExcel()));
+  document.getElementById("rPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => exportReceiptsPDFBulk()));
 
   await refetchAndRenderReceipts();
 }
@@ -793,14 +797,14 @@ function renderReceiptsTable(){
       </tr>`;
     }).join("")}</tbody>`;
 
-  tableEl.querySelectorAll(".r-print-btn").forEach(b => b.addEventListener("click", () => {
+  tableEl.querySelectorAll(".r-print-btn").forEach(b => b.addEventListener("click", () => withBusyButton(b, async () => {
     const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
     if (inv) printReceiptSimple(invoiceToSaleObject(inv));
-  }));
-  tableEl.querySelectorAll(".r-pdf-btn").forEach(b => b.addEventListener("click", () => {
+  })));
+  tableEl.querySelectorAll(".r-pdf-btn").forEach(b => b.addEventListener("click", () => withBusyButton(b, async () => {
     const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
     if (inv) exportReceiptPDFSimple(invoiceToSaleObject(inv));
-  }));
+  })));
 }
 
 /* ========================= MALL SHARE TAB (view/export only) =========================
@@ -1052,13 +1056,6 @@ async function renderMallShareTab(){
       </table>
     </div>
     <div class="panel">
-      <div class="panel-title">Daily Performance Summary (Copy-Paste Message)</div>
-      <p class="panel-help">Pick a date, then copy and paste directly into WhatsApp or email. Cumulative always runs from your first day of business through the selected date.</p>
-      <div class="btn-group"><div class="filter-field">Date<input type="date" id="dpsDate" value="${todayS}"></div></div>
-      <textarea id="dpsOutput" readonly style="width:100%; min-height:260px; font-family:monospace; font-size:13px; background:#0f0f0f; color:#e6be50; border:1px solid #444; border-radius:6px; padding:12px;"></textarea>
-      <button class="btn btn-primary btn-small" id="dpsCopyBtn" style="margin-top:10px;">Copy to Clipboard</button>
-    </div>
-    <div class="panel">
       <div class="panel-title">Revenue Share Report (Daily / Any Range)</div>
       <p class="panel-help">Generate the statement for any date or range \u2014 what you'd share with the mall on a normal day.</p>
       <div class="btn-group">
@@ -1093,55 +1090,6 @@ async function renderMallShareTab(){
   document.getElementById("msOverviewSettled").textContent = fmtMoney(settledAmountForRange(earliest, todayS));
   document.getElementById("msOverviewOutstanding").textContent = fmtMoney(unsettledAmountForRange(earliest, todayS));
 
-  function renderDpsOutput(){
-    const date = document.getElementById("dpsDate").value || todayS;
-    const dayFin = paymentMethodFinal(buildAdhocRec(date, date));
-    const daySummary = computeMdSummary(date, date);
-    const cumFin = paymentMethodFinal(buildAdhocRec(earliest, date));
-    const cumSummary = computeMdSummary(earliest, date);
-    const cumSettled = settledAmountForRange(earliest, date);
-    const cumBalance = unsettledAmountForRange(earliest, date);
-    const dateObj = new Date(date);
-    const dayLabel = dateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-    const earliestObj = new Date(earliest);
-    const cumFromLabel = earliestObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-    const cumToLabel = dateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-    const mdPct = liveConfig.mdSharePercent;
-    const ownerPct = 100 - mdPct;
-    document.getElementById("dpsOutput").value = `Greetings Sir,
-
-Please find RRG Lounge's performance summary:
-
-Today's (${dayLabel}) Performance
-
-Revenue: ${fmtMoney(dayFin.finalTotalRevenue)}
-Sessions: ${daySummary.totalSessions}
-Units Utilized: ${daySummary.unitsUsed}
-Mall Share (${mdPct}%): ${fmtMoney(dayFin.finalMdShare)}
-RRG Lounge Share (${ownerPct}%): ${fmtMoney(dayFin.finalOwnerShare)}
-
-Cumulative Performance (${cumFromLabel} \u2013 ${cumToLabel})
-
-Revenue: ${fmtMoney(cumFin.finalTotalRevenue)}
-Sessions: ${cumSummary.totalSessions}
-Mall Share (${mdPct}%): ${fmtMoney(cumFin.finalMdShare)}
-RRG Lounge Share (${ownerPct}%): ${fmtMoney(cumFin.finalOwnerShare)}
-
-Settled: ${fmtMoney(cumSettled)}
-Balance to Settle: ${fmtMoney(cumBalance)}
-
-Thank you.`;
-  }
-  renderDpsOutput();
-  document.getElementById("dpsDate").addEventListener("change", renderDpsOutput);
-  document.getElementById("dpsCopyBtn").addEventListener("click", async () => {
-    const text = document.getElementById("dpsOutput").value;
-    try { await navigator.clipboard.writeText(text); } catch(e) {}
-    const btn = document.getElementById("dpsCopyBtn");
-    const original = btn.textContent; btn.textContent = "Copied!";
-    setTimeout(() => { btn.textContent = original; }, 1500);
-  });
-
   function renderRsrPreview(){
     const from = document.getElementById("rsrFrom").value || earliest;
     const to = document.getElementById("rsrTo").value || todayS;
@@ -1164,16 +1112,16 @@ Thank you.`;
   document.getElementById("rsrYesterday").addEventListener("click", () => { const y = new Date(); y.setDate(y.getDate()-1); const ys = todayStrFromDate(y); document.getElementById("rsrFrom").value = ys; document.getElementById("rsrTo").value = ys; renderRsrPreview(); });
   document.getElementById("rsrWeek").addEventListener("click", () => { const now = new Date(); const ws = new Date(now.getFullYear(), now.getMonth(), now.getDate()-now.getDay()); document.getElementById("rsrFrom").value = todayStrFromDate(ws); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
   document.getElementById("rsrMonth").addEventListener("click", () => { const now = new Date(); document.getElementById("rsrFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1)); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
-  document.getElementById("rsrExportPdfBtn").addEventListener("click", () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementPDF(buildAdhocRec(from, to)); });
-  document.getElementById("rsrExportExcelBtn").addEventListener("click", () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementExcel(buildAdhocRec(from, to)); });
+  document.getElementById("rsrExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementPDF(buildAdhocRec(from, to)); }));
+  document.getElementById("rsrExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementExcel(buildAdhocRec(from, to)); }));
 
   document.getElementById("srLast1Month").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-1, now.getDate())); document.getElementById("srTo").value = todayS; });
   document.getElementById("srLast3Months").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-3, now.getDate())); document.getElementById("srTo").value = todayS; });
   document.getElementById("srLast6Months").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-6, now.getDate())); document.getElementById("srTo").value = todayS; });
   document.getElementById("srLast1Year").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear()-1, now.getMonth(), now.getDate())); document.getElementById("srTo").value = todayS; });
   document.getElementById("srAll").addEventListener("click", () => { document.getElementById("srFrom").value = earliest; document.getElementById("srTo").value = todayS; });
-  document.getElementById("srExportPdfBtn").addEventListener("click", () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportPDF(from, to, settlementsInBusinessPeriod(from, to)); });
-  document.getElementById("srExportExcelBtn").addEventListener("click", () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportExcel(from, to, settlementsInBusinessPeriod(from, to)); });
+  document.getElementById("srExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportPDF(from, to, settlementsInBusinessPeriod(from, to)); }));
+  document.getElementById("srExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportExcel(from, to, settlementsInBusinessPeriod(from, to)); }));
 }
 function todayStrFromDate(d){ return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
 
