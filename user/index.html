@@ -262,6 +262,19 @@ function adjustmentsTotalForSessions(sessions){
   });
   return total;
 }
+// Normalizes any payment-method string (from a session, a split row, or an adjustment) to one
+// of the three canonical buckets -- defends against a stray case/whitespace difference (e.g.
+// "cash" vs "Cash") silently creating an invisible extra bucket that never shows on screen.
+// Anything that genuinely isn't Cash/UPI/Card falls into "Other", which the table below DOES
+// render if it's ever non-zero, rather than swallowing the amount without a trace.
+function normalizePaymentMethod(m){
+  const t = String(m || "").trim();
+  const lower = t.toLowerCase();
+  if (lower === "cash") return "Cash";
+  if (lower === "upi") return "UPI";
+  if (lower === "card") return "Card";
+  return t || "Other";
+}
 function paymentMethodTotals(){
   const totals = { Cash: { amount: 0, count: 0 }, UPI: { amount: 0, count: 0 }, Card: { amount: 0, count: 0 } };
   const seenInvoices = new Set();
@@ -271,20 +284,22 @@ function paymentMethodTotals(){
     const invKey = s.invoiceNo || ("noinv-" + s.id);
     const firstTime = !seenInvoices.has(invKey);
     if (firstTime) seenInvoices.add(invKey);
-    if (s.method === "Split") {
+    if (normalizePaymentMethod(s.method) === "Split") {
       if (!s.invoiceNo || !firstTime) continue;
       const split = paymentSplitFor(s.invoiceNo);
       if (split) split.splits.forEach(row => {
-        if (!totals[row.method]) totals[row.method] = { amount: 0, count: 0 };
-        totals[row.method].amount += row.amount;
-        totals[row.method].count += 1;
+        const key = normalizePaymentMethod(row.method);
+        if (!totals[key]) totals[key] = { amount: 0, count: 0 };
+        totals[key].amount += row.amount;
+        totals[key].count += 1;
       });
       continue;
     }
-    if (!totals[s.method]) totals[s.method] = { amount: 0, count: 0 };
+    const key = normalizePaymentMethod(s.method);
+    if (!totals[key]) totals[key] = { amount: 0, count: 0 };
     if (!firstTime) continue; // count each invoice once, even with multiple line items
-    totals[s.method].amount += amt;
-    totals[s.method].count += 1;
+    totals[key].amount += amt;
+    totals[key].count += 1;
   }
   // Reconciliation adjustments (logged via Receipts) each carry their own payment method and
   // must be folded in here too -- otherwise this table silently undercounts against Today's
@@ -295,8 +310,9 @@ function paymentMethodTotals(){
     const adj = adjustmentFor(s.invoiceNo);
     if (!adj) continue;
     seenAdjInvoices.add(s.invoiceNo);
-    if (!totals[adj.method]) totals[adj.method] = { amount: 0, count: 0 };
-    totals[adj.method].amount += adj.amount;
+    const key = normalizePaymentMethod(adj.method);
+    if (!totals[key]) totals[key] = { amount: 0, count: 0 };
+    totals[key].amount += adj.amount;
   }
   return totals;
 }
@@ -452,6 +468,15 @@ function renderOperationsTab(){
   const runningCount = sessionsToday.filter(s => s.status === "running").length;
   const revenue = sessionsToday.reduce((a,s) => a + effectiveRevenue(s), 0) + adjustmentsTotalForSessions(sessionsToday);
   const methodTotals = paymentMethodTotals();
+  // Render every bucket that actually exists (Cash/UPI/Card always shown even at zero; anything
+  // unexpected -- e.g. a mismatched method string on an adjustment -- shows as its own row instead
+  // of silently vanishing). Total is summed across ALL buckets, so it can never drift from Revenue.
+  const knownOrder = ["Cash", "UPI", "Card"];
+  const extraKeys = Object.keys(methodTotals).filter(k => !knownOrder.includes(k)).sort();
+  const methodRowOrder = knownOrder.concat(extraKeys);
+  const methodRows = methodRowOrder.map(k => `<tr><td>${escapeHtml(k)}</td><td>${methodTotals[k].count}</td><td>${fmtMoney(methodTotals[k].amount)}</td></tr>`).join("");
+  const grandCount = methodRowOrder.reduce((a,k) => a + methodTotals[k].count, 0);
+  const grandAmount = methodRowOrder.reduce((a,k) => a + methodTotals[k].amount, 0);
 
   el.innerHTML = `
     <div class="panel">
@@ -473,10 +498,8 @@ function renderOperationsTab(){
       <table>
         <thead><tr><th>Method</th><th>Transactions</th><th>Amount</th></tr></thead>
         <tbody>
-          <tr><td>Cash</td><td>${methodTotals.Cash.count}</td><td>${fmtMoney(methodTotals.Cash.amount)}</td></tr>
-          <tr><td>UPI</td><td>${methodTotals.UPI.count}</td><td>${fmtMoney(methodTotals.UPI.amount)}</td></tr>
-          <tr><td>Card</td><td>${methodTotals.Card.count}</td><td>${fmtMoney(methodTotals.Card.amount)}</td></tr>
-          <tr><td><b>Total Collected</b></td><td><b>${methodTotals.Cash.count + methodTotals.UPI.count + methodTotals.Card.count}</b></td><td><b>${fmtMoney(methodTotals.Cash.amount + methodTotals.UPI.amount + methodTotals.Card.amount)}</b></td></tr>
+          ${methodRows}
+          <tr><td><b>Total Collected</b></td><td><b>${grandCount}</b></td><td><b>${fmtMoney(grandAmount)}</b></td></tr>
         </tbody>
       </table>
     </div>
