@@ -56,6 +56,8 @@
   .tab.active { color: #e6be50; border-bottom-color: #e6be50; }
   .btn-small { padding: 6px 10px; font-size: 12px; width: auto; display: inline-block; }
   .btn-outline { background: transparent; border: 1px solid #555; color: #ccc; }
+  .btn-outline.qr-active { background: #e6be50; color: #1a1a1a; border-color: #e6be50; font-weight: 600; }
+  .btn:disabled { opacity: 0.6; cursor: default; }
   .btn-primary { background: #e6be50; color: #1a1a1a; border: none; }
   .btn-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 10px; }
   .filter-field { display: flex; flex-direction: column; font-size: 12px; color: #999; }
@@ -171,6 +173,11 @@ async function withBusyButton(btn, fn){
   const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Processing\u2026";
+  // The heavy work below (jsPDF/SheetJS) runs synchronously and blocks the main thread --
+  // without this, the browser batches the label change together with that work and never
+  // actually paints "Processing..." until it's already done. Waiting two animation frames
+  // guarantees a real paint happens first.
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   try {
     await fn();
   } catch (e) {
@@ -179,6 +186,15 @@ async function withBusyButton(btn, fn){
     btn.disabled = false;
     btn.textContent = original;
   }
+}
+
+// Highlights whichever quick-range button (Today/Yesterday/This Month, Last 1 Month, etc.) was
+// just clicked, clearing the highlight from its siblings -- so it's visible which range is
+// currently selected, the same way the top tabs show which tab is active.
+function markActiveQuickRange(clickedBtn){
+  if (!clickedBtn || !clickedBtn.parentElement) return;
+  clickedBtn.parentElement.querySelectorAll(".qr-btn").forEach(b => b.classList.remove("qr-active"));
+  clickedBtn.classList.add("qr-active");
 }
 
 function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
@@ -250,6 +266,18 @@ function paymentMethodTotals(){
     if (!firstTime) continue; // count each invoice once, even with multiple line items
     totals[s.method].amount += amt;
     totals[s.method].count += 1;
+  }
+  // Reconciliation adjustments (logged via Receipts) each carry their own payment method and
+  // must be folded in here too -- otherwise this table silently undercounts against Today's
+  // Revenue above, which already includes them via adjustmentsTotalForSessions.
+  const seenAdjInvoices = new Set();
+  for (const s of sessionsToday) {
+    if (!s.invoiceNo || seenAdjInvoices.has(s.invoiceNo)) continue;
+    const adj = adjustmentFor(s.invoiceNo);
+    if (!adj) continue;
+    seenAdjInvoices.add(s.invoiceNo);
+    if (!totals[adj.method]) totals[adj.method] = { amount: 0, count: 0 };
+    totals[adj.method].amount += adj.amount;
   }
   return totals;
 }
@@ -1061,10 +1089,10 @@ async function renderMallShareTab(){
       <div class="btn-group">
         <div class="filter-field">From<input type="date" id="rsrFrom" value="${todayS}"></div>
         <div class="filter-field">To<input type="date" id="rsrTo" value="${todayS}"></div>
-        <button class="btn btn-outline btn-small" id="rsrToday">Today</button>
-        <button class="btn btn-outline btn-small" id="rsrYesterday">Yesterday</button>
-        <button class="btn btn-outline btn-small" id="rsrWeek">This Week</button>
-        <button class="btn btn-outline btn-small" id="rsrMonth">This Month</button>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrToday">Today</button>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrYesterday">Yesterday</button>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrWeek">This Week</button>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrMonth">This Month</button>
       </div>
       <div id="rsrPreview"></div>
       <button class="btn btn-primary btn-small" id="rsrExportPdfBtn" style="margin-top:10px;">Export PDF</button>
@@ -1076,13 +1104,13 @@ async function renderMallShareTab(){
       <div class="btn-group">
         <div class="filter-field">From<input type="date" id="srFrom" value="${todayS}"></div>
         <div class="filter-field">To<input type="date" id="srTo" value="${todayS}"></div>
-        <button class="btn btn-outline btn-small" id="srLast1Month">Last 1 Month</button>
-        <button class="btn btn-outline btn-small" id="srLast3Months">Last 3 Months</button>
-        <button class="btn btn-outline btn-small" id="srLast6Months">Last 6 Months</button>
-        <button class="btn btn-outline btn-small" id="srLast1Year">Last 1 Year</button>
-        <button class="btn btn-outline btn-small" id="srAll">All-Time</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srLast1Month">Last 1 Month</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srLast3Months">Last 3 Months</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srLast6Months">Last 6 Months</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srLast1Year">Last 1 Year</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srAll">All-Time</button>
       </div>
-      <button class="btn btn-outline btn-small" id="srExportPdfBtn">Export PDF</button>
+      <button class="btn btn-primary btn-small" id="srExportPdfBtn">Export PDF</button>
       <button class="btn btn-outline btn-small" id="srExportExcelBtn">Export Excel</button>
     </div>
   `;
@@ -1108,18 +1136,18 @@ async function renderMallShareTab(){
   renderRsrPreview();
   document.getElementById("rsrFrom").addEventListener("change", renderRsrPreview);
   document.getElementById("rsrTo").addEventListener("change", renderRsrPreview);
-  document.getElementById("rsrToday").addEventListener("click", () => { document.getElementById("rsrFrom").value = todayS; document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
-  document.getElementById("rsrYesterday").addEventListener("click", () => { const y = new Date(); y.setDate(y.getDate()-1); const ys = todayStrFromDate(y); document.getElementById("rsrFrom").value = ys; document.getElementById("rsrTo").value = ys; renderRsrPreview(); });
-  document.getElementById("rsrWeek").addEventListener("click", () => { const now = new Date(); const ws = new Date(now.getFullYear(), now.getMonth(), now.getDate()-now.getDay()); document.getElementById("rsrFrom").value = todayStrFromDate(ws); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
-  document.getElementById("rsrMonth").addEventListener("click", () => { const now = new Date(); document.getElementById("rsrFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1)); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrToday").addEventListener("click", (e) => { markActiveQuickRange(e.target); document.getElementById("rsrFrom").value = todayS; document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrYesterday").addEventListener("click", (e) => { markActiveQuickRange(e.target); const y = new Date(); y.setDate(y.getDate()-1); const ys = todayStrFromDate(y); document.getElementById("rsrFrom").value = ys; document.getElementById("rsrTo").value = ys; renderRsrPreview(); });
+  document.getElementById("rsrWeek").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); const ws = new Date(now.getFullYear(), now.getMonth(), now.getDate()-now.getDay()); document.getElementById("rsrFrom").value = todayStrFromDate(ws); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrMonth").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("rsrFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1)); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
   document.getElementById("rsrExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementPDF(buildAdhocRec(from, to)); }));
   document.getElementById("rsrExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementExcel(buildAdhocRec(from, to)); }));
 
-  document.getElementById("srLast1Month").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-1, now.getDate())); document.getElementById("srTo").value = todayS; });
-  document.getElementById("srLast3Months").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-3, now.getDate())); document.getElementById("srTo").value = todayS; });
-  document.getElementById("srLast6Months").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-6, now.getDate())); document.getElementById("srTo").value = todayS; });
-  document.getElementById("srLast1Year").addEventListener("click", () => { const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear()-1, now.getMonth(), now.getDate())); document.getElementById("srTo").value = todayS; });
-  document.getElementById("srAll").addEventListener("click", () => { document.getElementById("srFrom").value = earliest; document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast1Month").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-1, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast3Months").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-3, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast6Months").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-6, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast1Year").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear()-1, now.getMonth(), now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srAll").addEventListener("click", (e) => { markActiveQuickRange(e.target); document.getElementById("srFrom").value = earliest; document.getElementById("srTo").value = todayS; });
   document.getElementById("srExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportPDF(from, to, settlementsInBusinessPeriod(from, to)); }));
   document.getElementById("srExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportExcel(from, to, settlementsInBusinessPeriod(from, to)); }));
 }
