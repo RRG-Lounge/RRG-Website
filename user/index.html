@@ -277,43 +277,57 @@ function normalizePaymentMethod(m){
 }
 function paymentMethodTotals(){
   const totals = { Cash: { amount: 0, count: 0 }, UPI: { amount: 0, count: 0 }, Card: { amount: 0, count: 0 } };
-  const seenInvoices = new Set();
+
+  // Group sessions by invoice first -- a single checkout can cover multiple chairs/items under
+  // one invoiceNo, and every one of those line items has to be summed together before bucketing
+  // by payment method. Treating each session row on its own (the earlier approach here) silently
+  // dropped every line item after the first on any multi-item bill.
+  const invoiceMap = {};
+  const standalone = [];
   for (const s of sessionsToday) {
-    const amt = collectedAmount(s);
-    if (amt <= 0) continue;
-    const invKey = s.invoiceNo || ("noinv-" + s.id);
-    const firstTime = !seenInvoices.has(invKey);
-    if (firstTime) seenInvoices.add(invKey);
-    if (normalizePaymentMethod(s.method) === "Split") {
-      if (!s.invoiceNo || !firstTime) continue;
-      const split = paymentSplitFor(s.invoiceNo);
-      if (split) split.splits.forEach(row => {
-        const key = normalizePaymentMethod(row.method);
-        if (!totals[key]) totals[key] = { amount: 0, count: 0 };
-        totals[key].amount += row.amount;
-        totals[key].count += 1;
-      });
-      continue;
+    if (s.invoiceNo) {
+      if (!invoiceMap[s.invoiceNo]) invoiceMap[s.invoiceNo] = { method: s.method, sessions: [] };
+      invoiceMap[s.invoiceNo].sessions.push(s);
+    } else {
+      standalone.push(s);
     }
-    const key = normalizePaymentMethod(s.method);
-    if (!totals[key]) totals[key] = { amount: 0, count: 0 };
-    if (!firstTime) continue; // count each invoice once, even with multiple line items
-    totals[key].amount += amt;
-    totals[key].count += 1;
   }
-  // Reconciliation adjustments (logged via Receipts) each carry their own payment method and
-  // must be folded in here too -- otherwise this table silently undercounts against Today's
-  // Revenue above, which already includes them via adjustmentsTotalForSessions.
-  const seenAdjInvoices = new Set();
-  for (const s of sessionsToday) {
-    if (!s.invoiceNo || seenAdjInvoices.has(s.invoiceNo)) continue;
-    const adj = adjustmentFor(s.invoiceNo);
-    if (!adj) continue;
-    seenAdjInvoices.add(s.invoiceNo);
-    const key = normalizePaymentMethod(adj.method);
+  const addTo = (methodRaw, amount, addCount) => {
+    const key = normalizePaymentMethod(methodRaw);
     if (!totals[key]) totals[key] = { amount: 0, count: 0 };
-    totals[key].amount += adj.amount;
-  }
+    totals[key].amount += amount;
+    if (addCount) totals[key].count += 1;
+  };
+
+  Object.keys(invoiceMap).forEach(invoiceNo => {
+    const { method, sessions } = invoiceMap[invoiceNo];
+    const collected = sessions.reduce((a, s) => a + collectedAmount(s), 0);
+    // An adjustment corrects THIS invoice's own bill -- fold it into the same method bucket the
+    // sale itself falls into, matching how the Receipts tab (and the real dashboard) attribute it.
+    const adj = adjustmentFor(invoiceNo);
+    const adjAmt = adj ? adj.amount : 0;
+    if (collected <= 0 && adjAmt === 0) return;
+
+    if (normalizePaymentMethod(method) === "Split") {
+      const split = paymentSplitFor(invoiceNo);
+      if (split) {
+        split.splits.forEach(row => addTo(row.method, row.amount, true));
+        // Best-effort: an adjustment on a split-paid invoice goes into the split's first
+        // component bucket -- there's no single "right" bucket for a correction on a bill that
+        // was itself paid across multiple methods.
+        if (adjAmt && split.splits.length) addTo(split.splits[0].method, adjAmt, false);
+      }
+      return;
+    }
+    addTo(method, collected + adjAmt, true); // one count per INVOICE, not per line item
+  });
+
+  standalone.forEach(s => {
+    const collected = collectedAmount(s);
+    if (collected <= 0) return;
+    addTo(s.method, collected, true);
+  });
+
   return totals;
 }
 
