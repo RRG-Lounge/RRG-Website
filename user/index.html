@@ -7,6 +7,9 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #121212; color: #eee; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
@@ -41,6 +44,21 @@
   th { color: #999; font-size: 12px; text-transform: uppercase; }
   .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
   .dot-red { background: #e0745e; } .dot-amber { background: #e0a87e; } .dot-green { background: #7ee08c; }
+  .tabs { display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid #333; margin-bottom: 10px; }
+  .tab { padding: 10px 14px; color: #999; cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent; }
+  .tab.active { color: #e6be50; border-bottom-color: #e6be50; }
+  .btn-small { padding: 6px 10px; font-size: 12px; width: auto; display: inline-block; }
+  .btn-outline { background: transparent; border: 1px solid #555; color: #ccc; }
+  .btn-primary { background: #e6be50; color: #1a1a1a; border: none; }
+  .btn-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 10px; }
+  .filter-field { display: flex; flex-direction: column; font-size: 12px; color: #999; }
+  .filter-field input, .filter-field select { margin-top: 3px; padding: 7px 8px; border-radius: 6px; border: 1px solid #444; background: #0f0f0f; color: #eee; font-size: 13px; }
+  .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .data-table td, .data-table th { padding: 8px 6px; text-align: left; border-bottom: 1px solid #262626; vertical-align: top; }
+  .data-table th { color: #999; font-size: 11px; text-transform: uppercase; }
+  .receipt-actions { white-space: nowrap; }
+  .receipt-actions .btn-small { margin-right: 4px; margin-bottom: 4px; }
+  .table-scroll { overflow-x: auto; }
 </style>
 </head>
 <body>
@@ -69,9 +87,10 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [] };
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge" };
 let sessionsToday = [], cashCountsToday = [], paymentSplitsToday = [], adjustmentsToday = [];
 let unsubs = [];
+let currentTab = "operations";
 
 // ---------------------------------------------------------------------------
 // Self-service branding -- same pattern as the main relaxrechargego.com site's
@@ -270,7 +289,19 @@ async function buildApp(){
         </div>
       </div>
     </div>
+    <div class="tabs">
+      <div class="tab active" data-tab="operations">Operations</div>
+      <div class="tab" data-tab="receipts">Receipts</div>
+    </div>
     <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
+
+  document.querySelectorAll(".tab").forEach(tabEl => {
+    tabEl.addEventListener("click", () => {
+      currentTab = tabEl.dataset.tab;
+      document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tabEl));
+      render();
+    });
+  });
 
   if (mallsList.length) {
     selectedMallId = selectedMallId || mallsList[0].id;
@@ -294,7 +325,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [] };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge" };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     render();
@@ -322,6 +353,11 @@ async function buildApp(){
 }
 
 function render(){
+  if (currentTab === "receipts") { renderReceiptsTab(); return; }
+  renderOperationsTab();
+}
+
+function renderOperationsTab(){
   const el = document.getElementById("mainContent");
   if (!el) return;
   const today = todayStr();
@@ -384,6 +420,376 @@ function render(){
       </table>
     </div>
   `;
+}
+
+/* ========================= RECEIPTS TAB (view/Print/PDF only) =========================
+   Mirrors the exact read-only behaviour already proven for role "mall_admin" in the main
+   Lounge OS dashboard: no edit fields, no Adjust/Save-method buttons -- just look up a past
+   bill, print it, or save it as a PDF. Same underlying figures (adjustments, splits) as the
+   real dashboard so nothing here can show a different number than what staff actually see. */
+
+function tokenTypeLabel(unitType){
+  if (unitType === "Leg") return "Foot";
+  if (unitType === "Advanced Leg") return "Adv. Foot";
+  return "Body";
+}
+function massagerNameFor(unitType){ return tokenTypeLabel(unitType) + " Massager"; }
+function cartItemName(chairName, packageLabel, unitTypeFallback){
+  const type = chairName != null ? unitTypeOf(chairName) : (unitTypeFallback || "Chair");
+  return massagerNameFor(type) + "-" + packageLabel;
+}
+function tokenItemDisplayName(item){
+  if (item.chairName != null) return cartItemName(item.chairName, item.packageLabel);
+  return massagerNameFor(item.unitType) + "-" + item.packageLabel;
+}
+function groupCartItemsClean(items){
+  const map = {}; const order = [];
+  items.forEach(it => {
+    const name = tokenItemDisplayName(it);
+    const key = name + "|" + it.price;
+    if (!map[key]) { map[key] = { name, rate: it.price, qty: 0, subtotal: 0 }; order.push(key); }
+    map[key].qty += 1;
+    map[key].subtotal += it.price;
+  });
+  return order.map(k => map[k]);
+}
+function splitMethodLabel(split){
+  if (!split) return "Split";
+  return split.splits.filter(s => s.amount > 0).map(s => `${s.method} ${fmtMoney(s.amount)}`).join(" + ");
+}
+function dmy(d = new Date()){
+  const pad2 = n => String(n).padStart(2,"0");
+  return pad2(d.getDate()) + "/" + pad2(d.getMonth()+1) + "/" + d.getFullYear();
+}
+function timeStr(d = new Date()){
+  const pad2 = n => String(n).padStart(2,"0");
+  return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+}
+function fmtMoneyPDF(n){ return "Rs." + Math.round(n||0).toLocaleString("en-IN"); }
+function pdfSafeText(v){
+  if (v === null || v === undefined) return v;
+  if (typeof v !== "string") return v;
+  return v
+    .replace(/\u2192/g, "->").replace(/\u2190/g, "<-")
+    .replace(/[\u2013\u2014]/g, "-").replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"').replace(/\u2026/g, "...")
+    .replace(/[^\x00-\x7F]/g, "");
+}
+function gstBreakup(amount, rate){
+  const taxable = amount / (1 + rate/100);
+  const totalTax = amount - taxable;
+  return { taxable, cgst: totalTax/2, sgst: totalTax/2 };
+}
+
+// ---- Receipts data (loaded on demand, NOT a permanent listener -- avoids an ever-growing
+// full-history read cost; only the currently selected filter's range is ever fetched) ----
+let receiptsSessions = [], receiptsSplits = [], receiptsAdjustments = [], receiptsTxnRefs = [];
+let receiptsLoadedRange = null; // {from, to} of what's currently loaded, so we don't re-fetch needlessly
+let receiptsFilterFrom = null, receiptsFilterTo = null, receiptsSearchInvoice = "";
+let receiptsFilterYear = "", receiptsFilterMonth = "", receiptsFilterPaymentType = "";
+
+function invNoPrefix(dateStr){ return `RRG-FY${dateStr.slice(2,4)}-${dateStr.slice(5,7)}-${dateStr.slice(8,10)}`; }
+
+// Invoice numbers embed the date (RRG-FYyy-mm-dd-seq) and sort lexicographically WITHIN a
+// calendar year -- this range fetch is reliable for any range inside one calendar year (the
+// common case: Today, a month, a custom recent range). A range crossing a Dec->Jan boundary
+// can miss rows because "mm" resets past "dd" ordering -- flagged here rather than silently
+// risking a wrong/incomplete receipts list; ask before relying on this for a Dec-Jan range.
+async function loadReceiptsRange(from, to){
+  const fromPrefix = invNoPrefix(from), toPrefix = invNoPrefix(to);
+  const [sessSnap, splitSnap, adjSnap, refSnap] = await Promise.all([
+    fsDb.collection("sessions").where("date", ">=", from).where("date", "<=", to).get(),
+    fsDb.collection("paymentSplits").where("invoiceNo", ">=", fromPrefix).where("invoiceNo", "<", toPrefix + "\uf8ff").get(),
+    fsDb.collection("invoiceAdjustments").where("invoiceNo", ">=", fromPrefix).where("invoiceNo", "<", toPrefix + "\uf8ff").get(),
+    fsDb.collection("txnRefs").where("invoiceNo", ">=", fromPrefix).where("invoiceNo", "<", toPrefix + "\uf8ff").get()
+  ]);
+  receiptsSessions = sessSnap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+  receiptsSplits = splitSnap.docs.map(d => d.data());
+  receiptsAdjustments = adjSnap.docs.map(d => d.data());
+  receiptsTxnRefs = refSnap.docs.map(d => d.data());
+  receiptsLoadedRange = { from, to };
+}
+
+function receiptAdjustmentFor(invoiceNo){ return receiptsAdjustments.find(a => a.invoiceNo === invoiceNo) || null; }
+function receiptSplitFor(invoiceNo){ return receiptsSplits.find(p => p.invoiceNo === invoiceNo) || null; }
+function receiptTxnRefFor(invoiceNo){ const r = receiptsTxnRefs.find(x => x.invoiceNo === invoiceNo); return r ? r.ref : ""; }
+
+function sessionItemLabel(s){
+  const base = `${cartItemName(s.chairName, s.packageLabel, s.unitType)} (${s.chairName || "unassigned"})`;
+  if (s.status === "cancelled") return `${base} [${s.refunded ? "Cancelled-Refunded" : "Cancelled-Kept"}]`;
+  return base;
+}
+function invoicesFromSessions(){
+  const map = {}; const order = [];
+  for (const s of receiptsSessions) {
+    if (!s.invoiceNo) continue;
+    if (!map[s.invoiceNo]) {
+      const checkoutTs = new Date(s.date + "T" + s.time).getTime() || Date.now();
+      map[s.invoiceNo] = { invoiceNo: s.invoiceNo, date: s.date, time: s.time, startTs: checkoutTs, staff: s.staff, method: s.method, gst: s.gst, customerName: s.customerName || null, sessions: [] };
+      order.push(s.invoiceNo);
+    }
+    map[s.invoiceNo].sessions.push(s);
+  }
+  return order.map(k => map[k]).sort((a,b) => b.startTs - a.startTs);
+}
+function invoiceToSaleObject(inv){
+  const activeSessions = inv.sessions.filter(s => s.status !== "cancelled");
+  const cancelledSessions = inv.sessions.filter(s => s.status === "cancelled");
+  const priced = activeSessions.map(s => ({ chairName: s.chairName, packageLabel: s.packageLabel, price: s.amount, unitType: s.unitType }));
+  const items = groupCartItemsClean(priced);
+  cancelledSessions.forEach(s => {
+    const tag = s.refunded ? "Cancelled - Refunded" : "Cancelled - Kept";
+    items.push({ name: `${tokenItemDisplayName(s)} (${tag})`, rate: s.refunded ? 0 : s.amount, qty: 1, subtotal: s.refunded ? 0 : s.amount });
+  });
+  const baseTotal = inv.sessions.reduce((a,s) => a + effectiveRevenue(s), 0);
+  const adj = receiptAdjustmentFor(inv.invoiceNo);
+  if (adj) items.push({ name: adj.label, rate: adj.amount, qty: 1, subtotal: adj.amount });
+  const total = baseTotal + (adj ? adj.amount : 0);
+  const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+  return { invoiceNo: inv.invoiceNo, date: inv.date, time: inv.time, startTs: inv.startTs, staff: inv.staff, method: inv.method, methodDisplay: split ? splitMethodLabel(split) : inv.method, gst: inv.gst, items, total, customerName: inv.customerName || null };
+}
+function currentFilteredInvoices(){
+  return invoicesFromSessions().filter(inv => {
+    if (receiptsFilterYear !== "" || receiptsFilterMonth !== "") {
+      if (receiptsFilterYear !== "" && inv.date.slice(0,4) !== String(receiptsFilterYear)) return false;
+      if (receiptsFilterMonth !== "" && (parseInt(inv.date.slice(5,7),10) - 1) !== parseInt(receiptsFilterMonth,10)) return false;
+    } else {
+      if (inv.date < receiptsFilterFrom || inv.date > receiptsFilterTo) return false;
+    }
+    if (receiptsSearchInvoice) {
+      const q = receiptsSearchInvoice.toLowerCase();
+      const matchesInvoice = inv.invoiceNo.toLowerCase().includes(q);
+      const matchesCustomer = inv.customerName && inv.customerName.toLowerCase().includes(q);
+      const matchesTxnRef = receiptTxnRefFor(inv.invoiceNo).toLowerCase().includes(q);
+      if (!matchesInvoice && !matchesCustomer && !matchesTxnRef) return false;
+    }
+    if (receiptsFilterPaymentType && inv.method !== receiptsFilterPaymentType) return false;
+    return true;
+  });
+}
+function receiptsFilterLabel(){
+  const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const parts = [];
+  if (receiptsFilterMonth !== "") parts.push(MONTH_ABBR[parseInt(receiptsFilterMonth,10)]);
+  if (receiptsFilterYear !== "") parts.push(receiptsFilterYear);
+  if (parts.length) return parts.join("_");
+  return `${receiptsFilterFrom}_to_${receiptsFilterTo}`;
+}
+
+// Simple, correct, desktop-friendly receipt (A4) rather than an exact 80mm thermal-roll replica --
+// same figures as the shop's own thermal bill, just laid out for a screen/printer here.
+function printReceiptSimple(sale){
+  const w = window.open("", "_blank", "width=480,height=700");
+  if (!w) { alert("Please allow pop-ups to print."); return; }
+  const gst = sale.gst || { enabled:false, rate:18, gstin:"" };
+  const gstRows = gst.enabled ? (() => { const b = gstBreakup(sale.total, gst.rate); return `
+    <tr><td>Taxable Value</td><td style="text-align:right;">${fmtMoney(b.taxable)}</td></tr>
+    <tr><td>CGST @ ${(gst.rate/2).toFixed(1)}%</td><td style="text-align:right;">${fmtMoney(b.cgst)}</td></tr>
+    <tr><td>SGST @ ${(gst.rate/2).toFixed(1)}%</td><td style="text-align:right;">${fmtMoney(b.sgst)}</td></tr>
+    ${gst.gstin ? `<tr><td>GSTIN</td><td style="text-align:right;">${escapeHtml(gst.gstin)}</td></tr>` : ""}`; })() : "";
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(sale.invoiceNo||"Receipt")}</title>
+    <style>body{font-family:monospace;padding:16px;color:#000;} table{width:100%;border-collapse:collapse;font-size:13px;} td{padding:3px 0;} .line{border-top:1px dashed #000;margin:6px 0;} .total{font-weight:700;font-size:15px;} .center{text-align:center;}</style>
+    </head><body>
+    <div class="center" style="font-weight:700;font-size:16px;">${escapeHtml(liveConfig.businessName || "RRG Lounge")}</div>
+    <div class="line"></div>
+    <table>
+      <tr><td>Invoice No</td><td style="text-align:right;">${escapeHtml(sale.invoiceNo||"-")}</td></tr>
+      <tr><td>Date</td><td style="text-align:right;">${dmy(new Date(sale.startTs))} ${sale.time}</td></tr>
+      <tr><td>Staff</td><td style="text-align:right;">${escapeHtml(sale.staff||"")}</td></tr>
+      ${sale.customerName ? `<tr><td>Customer</td><td style="text-align:right;">${escapeHtml(sale.customerName)}</td></tr>` : ""}
+    </table>
+    <div class="line"></div>
+    <table>${sale.items.map(it => `<tr><td>${escapeHtml(it.name)} x${it.qty}</td><td style="text-align:right;">${fmtMoney(it.subtotal)}</td></tr>`).join("")}</table>
+    <div class="line"></div>
+    <table>${gstRows}
+      <tr class="total"><td>TOTAL</td><td style="text-align:right;">${fmtMoney(sale.total)}</td></tr>
+      <tr><td>Payment</td><td style="text-align:right;">${escapeHtml(sale.methodDisplay || sale.method)}</td></tr>
+    </table>
+    <div class="line"></div>
+    <div class="center">Thank you! Visit again.</div>
+    </body></html>`);
+  w.document.close();
+  w.onload = () => { w.focus(); w.print(); };
+}
+
+function exportReceiptPDFSimple(sale){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a5" });
+  const rightX = 138; let y = 14;
+  doc.setFont("courier","bold"); doc.setFontSize(13);
+  doc.text(pdfSafeText(liveConfig.businessName || "RRG Lounge"), 74, y, { align: "center" }); y += 8;
+  doc.setLineWidth(0.2); doc.line(10, y, rightX, y); y += 6;
+  doc.setFont("courier","normal"); doc.setFontSize(10);
+  [["Invoice No", sale.invoiceNo||"-"], ["Date", dmy(new Date(sale.startTs)) + " " + sale.time], ["Staff", sale.staff||""], ["Customer", sale.customerName||""]].forEach(r => {
+    doc.text(r[0], 10, y); doc.text(pdfSafeText(String(r[1])), rightX, y, { align: "right" }); y += 6;
+  });
+  doc.line(10, y, rightX, y); y += 6;
+  sale.items.forEach(it => { doc.text(pdfSafeText(`${it.name} x${it.qty}`), 10, y); doc.text(fmtMoneyPDF(it.subtotal), rightX, y, { align: "right" }); y += 6; });
+  doc.line(10, y, rightX, y); y += 6;
+  const gst = sale.gst || { enabled:false, rate:18, gstin:"" };
+  if (gst.enabled) {
+    const b = gstBreakup(sale.total, gst.rate);
+    [["Taxable Value", fmtMoneyPDF(b.taxable)], [`CGST @ ${(gst.rate/2).toFixed(1)}%`, fmtMoneyPDF(b.cgst)], [`SGST @ ${(gst.rate/2).toFixed(1)}%`, fmtMoneyPDF(b.sgst)]].forEach(r => {
+      doc.text(r[0], 10, y); doc.text(r[1], rightX, y, { align: "right" }); y += 6;
+    });
+    doc.line(10, y, rightX, y); y += 6;
+  }
+  doc.setFont("courier","bold"); doc.setFontSize(12);
+  doc.text("TOTAL", 10, y); doc.text(fmtMoneyPDF(sale.total), rightX, y, { align: "right" }); y += 7;
+  doc.setFont("courier","normal"); doc.setFontSize(10);
+  doc.text("Payment", 10, y); doc.text(pdfSafeText(sale.methodDisplay || sale.method), rightX, y, { align: "right" });
+  doc.save(`${(sale.invoiceNo || "Receipt").replace(/[^\w-]/g,"_")}.pdf`);
+}
+
+function exportReceiptsExcel(){
+  const invoices = currentFilteredInvoices();
+  if (!invoices.length) { alert("No receipts match the current filter."); return; }
+  const rows = invoices.map(inv => {
+    const baseTotal = inv.sessions.reduce((a,s) => a + effectiveRevenue(s), 0);
+    const adj = receiptAdjustmentFor(inv.invoiceNo);
+    const total = baseTotal + (adj ? adj.amount : 0);
+    const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+    return {
+      Invoice: inv.invoiceNo, Date: inv.date, Time: inv.time,
+      Customer: inv.customerName || "", "Txn Ref": receiptTxnRefFor(inv.invoiceNo) || "",
+      Items: inv.sessions.map(sessionItemLabel).join(", "), Total: total,
+      Payment: split ? splitMethodLabel(split) : inv.method, Staff: inv.staff
+    };
+  });
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Receipts");
+  XLSX.writeFile(wb, `Receipts_${receiptsFilterLabel()}.xlsx`);
+}
+function exportReceiptsPDFBulk(){
+  const invoices = currentFilteredInvoices();
+  if (!invoices.length) { alert("No receipts match the current filter."); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" });
+  doc.setFontSize(16);
+  doc.text(`${pdfSafeText(liveConfig.businessName || "RRG Lounge")} \u2014 Receipts`, 14, 16);
+  doc.setFontSize(10);
+  doc.text(`Generated: ${dmy()} ${timeStr()}`, 14, 24);
+  doc.autoTable({
+    startY: 30,
+    head: [["Invoice", "Date", "Time", "Customer", "Txn Ref", "Items", "Total", "Payment", "Staff"]],
+    body: invoices.map(inv => {
+      const baseTotal = inv.sessions.reduce((a,s) => a + effectiveRevenue(s), 0);
+      const adj = receiptAdjustmentFor(inv.invoiceNo);
+      const total = baseTotal + (adj ? adj.amount : 0);
+      const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+      return [pdfSafeText(inv.invoiceNo), inv.date, inv.time, pdfSafeText(inv.customerName||"-"), pdfSafeText(receiptTxnRefFor(inv.invoiceNo)||"-"), pdfSafeText(inv.sessions.map(sessionItemLabel).join(", ")), fmtMoneyPDF(total), pdfSafeText(split ? splitMethodLabel(split) : inv.method), pdfSafeText(inv.staff)];
+    }),
+    styles: { fontSize: 8 },
+    headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }
+  });
+  doc.save(`Receipts_${receiptsFilterLabel()}.pdf`);
+}
+
+async function renderReceiptsTab(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  const todayS = todayStr();
+  if (receiptsFilterFrom === null) receiptsFilterFrom = todayS;
+  if (receiptsFilterTo === null) receiptsFilterTo = todayS;
+  const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const yearOptions = [2026,2027].map(y => `<option value="${y}" ${String(receiptsFilterYear)===String(y)?"selected":""}>${y}</option>`).join("");
+  const monthOptions = MONTH_NAMES.map((name,i) => `<option value="${i}" ${String(receiptsFilterMonth)===String(i)?"selected":""}>${name}</option>`).join("");
+  const paymentOptions = ["UPI","Cash","Card","Split","Pending"].map(m => `<option value="${m}" ${receiptsFilterPaymentType===m?"selected":""}>${m}</option>`).join("");
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Receipts</div>
+      <p class="panel-help">View-only \u2014 look up any past bill to reprint it or save a copy as PDF.</p>
+      <div class="btn-group">
+        <div class="filter-field">Year<select id="rYear"><option value="">All</option>${yearOptions}</select></div>
+        <div class="filter-field">Month<select id="rMonth"><option value="">All</option>${monthOptions}</select></div>
+        <div class="filter-field">Payment<select id="rPay"><option value="">All</option>${paymentOptions}</select></div>
+        <div class="filter-field">From<input type="date" id="rFrom" value="${receiptsFilterFrom}"></div>
+        <div class="filter-field">To<input type="date" id="rTo" value="${receiptsFilterTo}"></div>
+        <div class="filter-field">Search<input type="text" id="rSearch" value="${escapeHtml(receiptsSearchInvoice)}" placeholder="Invoice / Customer / Txn Ref"></div>
+        <button class="btn btn-outline btn-small" id="rTodayBtn">Today Only</button>
+        <button class="btn btn-outline btn-small" id="rExcelBtn">Excel</button>
+        <button class="btn btn-outline btn-small" id="rPdfBtn">PDF</button>
+      </div>
+      <div class="table-scroll"><table class="data-table" id="rTable"><tbody><tr><td>Loading\u2026</td></tr></tbody></table></div>
+    </div>`;
+
+  document.getElementById("rYear").addEventListener("change", e => { receiptsFilterYear = e.target.value; refetchAndRenderReceipts(); });
+  document.getElementById("rMonth").addEventListener("change", e => { receiptsFilterMonth = e.target.value; refetchAndRenderReceipts(); });
+  document.getElementById("rPay").addEventListener("change", e => { receiptsFilterPaymentType = e.target.value; renderReceiptsTable(); });
+  document.getElementById("rFrom").addEventListener("change", e => { receiptsFilterFrom = e.target.value; refetchAndRenderReceipts(); });
+  document.getElementById("rTo").addEventListener("change", e => { receiptsFilterTo = e.target.value; refetchAndRenderReceipts(); });
+  document.getElementById("rSearch").addEventListener("input", e => { receiptsSearchInvoice = e.target.value; renderReceiptsTable(); });
+  document.getElementById("rTodayBtn").addEventListener("click", () => {
+    receiptsFilterYear = ""; receiptsFilterMonth = ""; receiptsFilterFrom = todayS; receiptsFilterTo = todayS;
+    document.getElementById("rYear").value = ""; document.getElementById("rMonth").value = "";
+    document.getElementById("rFrom").value = todayS; document.getElementById("rTo").value = todayS;
+    refetchAndRenderReceipts();
+  });
+  document.getElementById("rExcelBtn").addEventListener("click", exportReceiptsExcel);
+  document.getElementById("rPdfBtn").addEventListener("click", exportReceiptsPDFBulk);
+
+  await refetchAndRenderReceipts();
+}
+
+async function refetchAndRenderReceipts(){
+  // Year/Month filter searches across that whole span; a plain From/To searches just that range.
+  const from = (receiptsFilterYear || receiptsFilterMonth)
+    ? `${receiptsFilterYear || "2020"}-${receiptsFilterMonth !== "" ? String(parseInt(receiptsFilterMonth,10)+1).padStart(2,"0") : "01"}-01`
+    : receiptsFilterFrom;
+  const to = (receiptsFilterYear || receiptsFilterMonth)
+    ? `${receiptsFilterYear || "2035"}-${receiptsFilterMonth !== "" ? String(parseInt(receiptsFilterMonth,10)+1).padStart(2,"0") : "12"}-31`
+    : receiptsFilterTo;
+  const tableEl = document.getElementById("rTable");
+  if (tableEl) tableEl.innerHTML = `<tbody><tr><td>Loading\u2026</td></tr></tbody>`;
+  try {
+    await loadReceiptsRange(from, to);
+  } catch (e) {
+    if (tableEl) tableEl.innerHTML = `<tbody><tr><td>Couldn't load receipts: ${escapeHtml(e.message)}</td></tr></tbody>`;
+    return;
+  }
+  renderReceiptsTable();
+}
+
+function renderReceiptsTable(){
+  const tableEl = document.getElementById("rTable");
+  if (!tableEl) return;
+  const invoices = currentFilteredInvoices();
+  if (!invoices.length) { tableEl.innerHTML = `<tbody><tr><td>No receipts found for this filter.</td></tr></tbody>`; return; }
+
+  tableEl.innerHTML = `
+    <thead><tr><th>Invoice</th><th>Date</th><th>Customer</th><th>Txn Ref</th><th>Items</th><th>Total</th><th>Payment</th><th>Staff</th><th></th></tr></thead>
+    <tbody>${invoices.map(inv => {
+      const baseTotal = inv.sessions.reduce((a,s) => a + effectiveRevenue(s), 0);
+      const adj = receiptAdjustmentFor(inv.invoiceNo);
+      const total = baseTotal + (adj ? adj.amount : 0);
+      const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+      const totalCell = adj ? `${fmtMoney(total)}<div style="font-size:11px;color:#999;">(${fmtMoney(baseTotal)} ${adj.amount>=0?"+":"-"} ${fmtMoney(Math.abs(adj.amount))} ${escapeHtml(adj.label)})</div>` : fmtMoney(total);
+      return `<tr>
+        <td>${escapeHtml(inv.invoiceNo)}</td>
+        <td>${inv.date}<br>${inv.time}</td>
+        <td>${inv.customerName ? escapeHtml(inv.customerName) : "-"}</td>
+        <td>${receiptTxnRefFor(inv.invoiceNo) ? escapeHtml(receiptTxnRefFor(inv.invoiceNo)) : "-"}</td>
+        <td>${escapeHtml(inv.sessions.map(sessionItemLabel).join(", "))}</td>
+        <td>${totalCell}</td>
+        <td>${escapeHtml(split ? splitMethodLabel(split) : inv.method)}</td>
+        <td>${escapeHtml(inv.staff)}</td>
+        <td class="receipt-actions">
+          <button class="btn btn-small btn-primary r-print-btn" data-invoice="${escapeHtml(inv.invoiceNo)}">Print</button>
+          <button class="btn btn-small btn-outline r-pdf-btn" data-invoice="${escapeHtml(inv.invoiceNo)}">PDF</button>
+        </td>
+      </tr>`;
+    }).join("")}</tbody>`;
+
+  tableEl.querySelectorAll(".r-print-btn").forEach(b => b.addEventListener("click", () => {
+    const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
+    if (inv) printReceiptSimple(invoiceToSaleObject(inv));
+  }));
+  tableEl.querySelectorAll(".r-pdf-btn").forEach(b => b.addEventListener("click", () => {
+    const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
+    if (inv) exportReceiptPDFSimple(invoiceToSaleObject(inv));
+  }));
 }
 
 window.addEventListener("DOMContentLoaded", () => {
