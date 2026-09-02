@@ -13,7 +13,14 @@
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #121212; color: #eee; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
-  #root { max-width: 720px; margin: 0 auto; min-height: 100vh; }
+  #root { max-width: 1400px; margin: 0 auto; min-height: 100vh; }
+  .topbar, .tabs, .content { max-width: 1400px; margin-left: auto; margin-right: auto; }
+  @media (min-width: 900px) {
+    /* Operations tab's four summary panels sit side-by-side on wider screens; Receipts' one
+       wide table panel is left alone -- it already uses the extra width itself. */
+    #mainContent.op-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; align-items: start; }
+    #mainContent.op-grid .panel { margin-bottom: 0; }
+  }
   .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
   .login-card { width: 100%; max-width: 380px; background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 24px; }
   .login-brand { font-size: 20px; font-weight: 700; color: #e6be50; text-align: center; margin-bottom: 4px; }
@@ -360,6 +367,7 @@ function render(){
 function renderOperationsTab(){
   const el = document.getElementById("mainContent");
   if (!el) return;
+  el.classList.add("op-grid");
   const today = todayStr();
 
   const rows = activeChairOrder().map(chairName => {
@@ -689,6 +697,7 @@ function exportReceiptsPDFBulk(){
 async function renderReceiptsTab(){
   const el = document.getElementById("mainContent");
   if (!el) return;
+  el.classList.remove("op-grid");
   const todayS = todayStr();
   if (receiptsFilterFrom === null) receiptsFilterFrom = todayS;
   if (receiptsFilterTo === null) receiptsFilterTo = todayS;
