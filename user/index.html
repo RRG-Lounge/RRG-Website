@@ -10,9 +10,22 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  :root{
+    --pine: #16332C;
+    --pine-2: #1F4A40;
+    --pine-3: #0E211C;
+    --cream: #F1E9D8;
+    --cream-2: #E7DCC3;
+    --copper: #C1703A;
+    --copper-light: #DE9863;
+    --ink: #16332C;
+    --line: rgba(22,51,44,0.14);
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #121212; color: #eee; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  body { margin: 0; background: var(--cream); color: var(--ink); font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
   #root { max-width: 1400px; margin: 0 auto; min-height: 100vh; }
   .topbar, .tabs, .content { max-width: 1400px; margin-left: auto; margin-right: auto; }
   @media (min-width: 900px) {
@@ -22,49 +35,49 @@
     #mainContent.op-grid .panel { margin-bottom: 0; }
   }
   .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-  .login-card { width: 100%; max-width: 380px; background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 24px; }
-  .login-brand { font-size: 20px; font-weight: 700; color: #e6be50; text-align: center; margin-bottom: 4px; }
-  .login-sub { text-align: center; color: #999; font-size: 13px; margin-bottom: 20px; }
+  .login-card { width: 100%; max-width: 380px; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 24px; box-shadow: 0 4px 24px rgba(22,51,44,0.08); }
+  .login-brand { font-family: 'Fraunces', serif; font-weight: 600; font-size: 22px; color: var(--pine); text-align: center; margin-bottom: 4px; }
+  .login-sub { text-align: center; color: var(--pine-2); opacity: 0.75; font-size: 13px; margin-bottom: 20px; }
   .field { margin-bottom: 14px; }
-  .field label { display: block; font-size: 13px; color: #ccc; margin-bottom: 4px; }
-  .field input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #444; background: #0f0f0f; color: #eee; font-size: 16px; }
-  .btn { width: 100%; padding: 14px; border-radius: 8px; border: none; background: #e6be50; color: #1a1a1a; font-weight: 700; font-size: 16px; cursor: pointer; }
+  .field label { display: block; font-size: 13px; color: var(--pine-2); margin-bottom: 4px; }
+  .field input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--cream); color: var(--ink); font-size: 16px; font-family: 'Inter', sans-serif; }
+  .btn { width: 100%; padding: 14px; border-radius: 8px; border: none; background: var(--copper); color: #fff; font-weight: 600; font-size: 16px; cursor: pointer; font-family: 'Inter', sans-serif; }
   .btn:disabled { opacity: 0.5; }
-  .login-error { color: #ff8080; font-size: 13px; margin-top: 10px; text-align: center; min-height: 16px; }
+  .login-error { color: #b3432f; font-size: 13px; margin-top: 10px; text-align: center; min-height: 16px; }
   .topbar { display: flex; justify-content: space-between; align-items: center; padding: 16px 16px 8px; gap: 12px; }
   .topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .topbar-right { display: flex; align-items: center; gap: 10px; }
   .topbar img.brand-logo { height: 34px; width: auto; display: none; } /* shown via JS once a file is found */
   .topbar-titles { min-width: 0; }
-  .topbar-titles .mall-name { color: #e6be50; font-size: 16px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .topbar-titles .portal-label { color: #999; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .topbar-titles .mall-name { font-family: 'Fraunces', serif; font-weight: 600; color: var(--pine); font-size: 17px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-titles .portal-label { color: var(--copper); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
   .topbar-user { text-align: right; }
-  .topbar-user .user-name { color: #ccc; font-size: 13px; }
-  .topbar button { background: transparent; border: 1px solid #555; color: #ccc; padding: 8px 14px; border-radius: 6px; }
-  .mall-picker { background: #0f0f0f; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 4px 8px; font-size: 12px; margin-top: 2px; }
+  .topbar-user .user-name { color: var(--pine-2); font-size: 13px; }
+  .topbar button { background: transparent; border: 1px solid var(--line); color: var(--pine); padding: 8px 14px; border-radius: 6px; font-family: 'Inter', sans-serif; cursor: pointer; }
+  .mall-picker { background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 12px; margin-top: 2px; font-family: 'Inter', sans-serif; }
   .content { padding: 8px 16px 40px; }
-  .panel { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
-  .panel-title { font-size: 16px; font-weight: 700; color: #e6be50; margin-bottom: 4px; }
-  .panel-help { font-size: 12px; color: #999; margin: 0 0 10px; }
+  .panel { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+  .panel-title { font-family: 'Fraunces', serif; font-size: 18px; font-weight: 600; color: var(--pine); margin-bottom: 4px; }
+  .panel-help { font-size: 12px; color: var(--pine-2); opacity: 0.75; margin: 0 0 10px; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  td, th { padding: 7px 4px; text-align: left; border-bottom: 1px solid #262626; }
-  th { color: #999; font-size: 12px; text-transform: uppercase; }
+  td, th { padding: 7px 4px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--pine-2); opacity: 0.7; font-size: 12px; text-transform: uppercase; }
   .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-  .dot-red { background: #e0745e; } .dot-amber { background: #e0a87e; } .dot-green { background: #7ee08c; }
-  .tabs { display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid #333; margin-bottom: 10px; }
-  .tab { padding: 10px 14px; color: #999; cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent; }
-  .tab.active { color: #e6be50; border-bottom-color: #e6be50; }
+  .dot-red { background: #b3432f; } .dot-amber { background: var(--copper-light); } .dot-green { background: #4a7a5e; }
+  .tabs { display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+  .tab { padding: 10px 14px; color: var(--pine-2); opacity: 0.6; cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent; font-weight: 500; }
+  .tab.active { color: var(--copper); opacity: 1; border-bottom-color: var(--copper); font-weight: 600; }
   .btn-small { padding: 6px 10px; font-size: 12px; width: auto; display: inline-block; }
-  .btn-outline { background: transparent; border: 1px solid #555; color: #ccc; }
-  .btn-outline.qr-active { background: #e6be50; color: #1a1a1a; border-color: #e6be50; font-weight: 600; }
+  .btn-outline { background: transparent; border: 1px solid var(--line); color: var(--pine); }
+  .btn-outline.qr-active { background: var(--copper); color: #fff; border-color: var(--copper); font-weight: 600; }
   .btn:disabled { opacity: 0.6; cursor: default; }
-  .btn-primary { background: #e6be50; color: #1a1a1a; border: none; }
+  .btn-primary { background: var(--copper); color: #fff; border: none; }
   .btn-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 10px; }
-  .filter-field { display: flex; flex-direction: column; font-size: 12px; color: #999; }
-  .filter-field input, .filter-field select { margin-top: 3px; padding: 7px 8px; border-radius: 6px; border: 1px solid #444; background: #0f0f0f; color: #eee; font-size: 13px; }
+  .filter-field { display: flex; flex-direction: column; font-size: 12px; color: var(--pine-2); opacity: 0.85; }
+  .filter-field input, .filter-field select { margin-top: 3px; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--cream); color: var(--ink); font-size: 13px; font-family: 'Inter', sans-serif; }
   .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .data-table td, .data-table th { padding: 8px 6px; text-align: left; border-bottom: 1px solid #262626; vertical-align: top; }
-  .data-table th { color: #999; font-size: 11px; text-transform: uppercase; }
+  .data-table td, .data-table th { padding: 8px 6px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .data-table th { color: var(--pine-2); opacity: 0.7; font-size: 11px; text-transform: uppercase; }
   .receipt-actions { white-space: nowrap; }
   .receipt-actions .btn-small { margin-right: 4px; margin-bottom: 4px; }
   .table-scroll { overflow-x: auto; }
@@ -808,7 +821,7 @@ function renderReceiptsTable(){
       const adj = receiptAdjustmentFor(inv.invoiceNo);
       const total = baseTotal + (adj ? adj.amount : 0);
       const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
-      const totalCell = adj ? `${fmtMoney(total)}<div style="font-size:11px;color:#999;">(${fmtMoney(baseTotal)} ${adj.amount>=0?"+":"-"} ${fmtMoney(Math.abs(adj.amount))} ${escapeHtml(adj.label)})</div>` : fmtMoney(total);
+      const totalCell = adj ? `${fmtMoney(total)}<div style="font-size:11px;color:var(--pine-2);opacity:0.7;">(${fmtMoney(baseTotal)} ${adj.amount>=0?"+":"-"} ${fmtMoney(Math.abs(adj.amount))} ${escapeHtml(adj.label)})</div>` : fmtMoney(total);
       return `<tr>
         <td>${escapeHtml(inv.invoiceNo)}</td>
         <td>${inv.date}<br>${inv.time}</td>
