@@ -21,9 +21,17 @@
   .btn { width: 100%; padding: 14px; border-radius: 8px; border: none; background: #e6be50; color: #1a1a1a; font-weight: 700; font-size: 16px; cursor: pointer; }
   .btn:disabled { opacity: 0.5; }
   .login-error { color: #ff8080; font-size: 13px; margin-top: 10px; text-align: center; min-height: 16px; }
-  .topbar { display: flex; justify-content: space-between; align-items: center; padding: 20px 16px 8px; }
-  .topbar b { color: #e6be50; font-size: 18px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; padding: 16px 16px 8px; gap: 12px; }
+  .topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .topbar img.brand-logo { height: 34px; width: auto; display: none; } /* shown via JS once a file is found */
+  .topbar-titles { min-width: 0; }
+  .topbar-titles .mall-name { color: #e6be50; font-size: 16px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-titles .portal-label { color: #999; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .topbar-user { text-align: right; }
+  .topbar-user .user-name { color: #ccc; font-size: 13px; }
   .topbar button { background: transparent; border: 1px solid #555; color: #ccc; padding: 8px 14px; border-radius: 6px; }
+  .mall-picker { background: #0f0f0f; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 4px 8px; font-size: 12px; margin-top: 2px; }
   .content { padding: 8px 16px 40px; }
   .panel { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
   .panel-title { font-size: 16px; font-weight: 700; color: #e6be50; margin-bottom: 4px; }
@@ -61,9 +69,73 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {} };
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [] };
 let sessionsToday = [], cashCountsToday = [], paymentSplitsToday = [], adjustmentsToday = [];
 let unsubs = [];
+
+// ---------------------------------------------------------------------------
+// Self-service branding -- same pattern as the main relaxrechargego.com site's
+// Locations system: nothing here is hardcoded. Add/swap a mall by editing
+// /malls.json (one entry: {id, name}) and dropping image files named
+// <id>-mall-logo.<ext> into /assets/ -- no code changes, no redeploy of logic.
+// Our own logo reuses the SAME file the main site already uses (/assets/rrg-logo.<ext>),
+// so updating it once updates it everywhere.
+// ---------------------------------------------------------------------------
+const IMG_EXTS = ["png", "jpg", "jpeg", "webp"];
+let mallsList = [];       // loaded from /malls.json
+let selectedMallId = null; // which mall's branding is currently shown
+
+function tryLoadImage(imgEl, basePath, extIndex){
+  extIndex = extIndex || 0;
+  if (extIndex >= IMG_EXTS.length) { imgEl.style.display = "none"; return; }
+  imgEl.onerror = () => tryLoadImage(imgEl, basePath, extIndex + 1);
+  imgEl.onload = () => { imgEl.style.display = "inline-block"; };
+  imgEl.src = basePath + "." + IMG_EXTS[extIndex];
+}
+
+async function loadMallsList(){
+  try {
+    const res = await fetch("/malls.json", { cache: "no-cache" });
+    if (!res.ok) throw new Error("no malls.json");
+    mallsList = await res.json();
+  } catch (e) {
+    mallsList = []; // fine -- branding just falls back to generic labels below
+  }
+}
+
+function currentMall(){
+  if (!mallsList.length) return null;
+  return mallsList.find(m => m.id === selectedMallId) || mallsList[0];
+}
+
+function renderBranding(){
+  const rrgLogoImg = document.getElementById("rrgLogoImg");
+  if (rrgLogoImg) tryLoadImage(rrgLogoImg, "/assets/rrg-logo");
+
+  const mall = currentMall();
+  const mallLogoImg = document.getElementById("mallLogoImg");
+  const mallNameEl = document.getElementById("mallNameLabel");
+  if (mall) {
+    if (mallLogoImg) tryLoadImage(mallLogoImg, "/assets/" + mall.id + "-mall-logo");
+    if (mallNameEl) mallNameEl.textContent = mall.name;
+  } else {
+    if (mallLogoImg) mallLogoImg.style.display = "none";
+    if (mallNameEl) mallNameEl.textContent = "RRG Lounge";
+  }
+
+  // Picker only ever appears once more than one mall is actually configured in
+  // malls.json. NOTE: this currently only switches which mall's NAME/LOGO is shown --
+  // real per-mall data separation is a separate backend project, not yet built.
+  const pickerWrap = document.getElementById("mallPickerWrap");
+  if (pickerWrap) pickerWrap.style.display = mallsList.length > 1 ? "block" : "none";
+}
+
+function currentStaffName(){
+  const email = fbAuth.currentUser && fbAuth.currentUser.email;
+  const staffId = email ? email.split("@")[0] : "";
+  const rec = (liveConfig.staff || []).find(s => s.staffId === staffId);
+  return (rec && rec.name) ? rec.name : staffId;
+}
 
 function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
 function fmtMoney(n){ return "\u20B9" + Math.round(n||0).toLocaleString("en-IN"); }
@@ -177,9 +249,39 @@ async function doLogin(){
 }
 
 async function buildApp(){
+  if (!mallsList.length) await loadMallsList();
   document.getElementById("root").innerHTML = `
-    <div class="topbar"><b>RRG Lounge \u2014 Mall Admin View</b><button id="logoutBtn">Logout</button></div>
+    <div class="topbar">
+      <div class="topbar-left">
+        <img id="rrgLogoImg" class="brand-logo" alt="RRG Lounge">
+        <div class="topbar-titles">
+          <div class="mall-name" id="mallNameLabel">RRG Lounge</div>
+          <div class="portal-label">Mall Admin Portal</div>
+          <div id="mallPickerWrap" style="display:none;">
+            <select class="mall-picker" id="mallPickerSelect"></select>
+          </div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <img id="mallLogoImg" class="brand-logo" alt="">
+        <div class="topbar-user">
+          <div class="user-name" id="userNameLabel">\u2014</div>
+          <button id="logoutBtn">Logout</button>
+        </div>
+      </div>
+    </div>
     <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
+
+  if (mallsList.length) {
+    selectedMallId = selectedMallId || mallsList[0].id;
+    const sel = document.getElementById("mallPickerSelect");
+    sel.innerHTML = mallsList.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
+    sel.value = selectedMallId;
+    sel.addEventListener("change", (e) => { selectedMallId = e.target.value; renderBranding(); });
+  }
+  renderBranding();
+  document.getElementById("userNameLabel").textContent = currentStaffName();
+
   document.getElementById("logoutBtn").addEventListener("click", async () => {
     unsubs.forEach(u => u()); unsubs = [];
     await fbAuth.signOut();
@@ -192,7 +294,9 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {} };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [] };
+    const nameEl = document.getElementById("userNameLabel");
+    if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     render();
   }));
   unsubs.push(fsDb.collection("sessions").where("date", "==", today).onSnapshot(snap => {
