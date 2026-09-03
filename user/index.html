@@ -136,7 +136,13 @@ function tryLoadImage(imgEl, basePath, extIndex){
   extIndex = extIndex || 0;
   if (extIndex >= IMG_EXTS.length) { imgEl.style.display = "none"; return; }
   imgEl.onerror = () => tryLoadImage(imgEl, basePath, extIndex + 1);
-  imgEl.onload = () => { imgEl.style.display = "inline-block"; };
+  imgEl.onload = () => {
+    imgEl.style.display = "inline-block";
+    // Record which extension actually loaded, so anything reusing this image later (e.g. adding
+    // it to a PDF) knows its real format instead of assuming PNG -- passing the wrong format to
+    // jsPDF's addImage decodes the bytes incorrectly and corrupts the image visually.
+    imgEl.dataset.imgFormat = IMG_EXTS[extIndex] === "jpg" ? "JPEG" : IMG_EXTS[extIndex].toUpperCase();
+  };
   imgEl.src = basePath + "." + IMG_EXTS[extIndex];
 }
 
@@ -1021,18 +1027,39 @@ function settlementsInBusinessPeriod(from, to){
 
 // Adds our logo (left) and the mall's logo (right) to a jsPDF doc, reusing the SAME <img>
 // elements already loaded in the top bar -- no separate base64 config needed.
+// Re-encodes any loaded <img> (regardless of its original format -- webp, jpg, whatever) into a
+// PNG data URL via canvas. jsPDF's addImage only understands PNG/JPEG natively; webp specifically
+// isn't supported at all, so passing it straight through corrupts or silently drops the image.
+// Going through canvas sidesteps the format question entirely -- the browser decodes the source
+// image (webp decoding is a normal browser capability), and toDataURL always re-encodes as PNG.
+function imageToPngDataUrl(imgEl){
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = imgEl.naturalWidth;
+    canvas.height = imgEl.naturalHeight;
+    canvas.getContext("2d").drawImage(imgEl, 0, 0);
+    return canvas.toDataURL("image/png");
+  } catch (e) { return null; }
+}
+
 function addPdfLogos(doc, y, pageWidth){
   const logoH = 13;
   const rrgImg = document.getElementById("rrgLogoImg");
   const mallImg = document.getElementById("mallLogoImg");
   let used = false;
   if (rrgImg && rrgImg.style.display !== "none" && rrgImg.naturalWidth) {
-    const w = logoH * (rrgImg.naturalWidth / rrgImg.naturalHeight);
-    try { doc.addImage(rrgImg, "PNG", 14, y, w, logoH); used = true; } catch(e) {}
+    const dataUrl = imageToPngDataUrl(rrgImg);
+    if (dataUrl) {
+      const w = logoH * (rrgImg.naturalWidth / rrgImg.naturalHeight);
+      try { doc.addImage(dataUrl, "PNG", 14, y, w, logoH); used = true; } catch(e) {}
+    }
   }
   if (mallImg && mallImg.style.display !== "none" && mallImg.naturalWidth) {
-    const w = logoH * (mallImg.naturalWidth / mallImg.naturalHeight);
-    try { doc.addImage(mallImg, "PNG", pageWidth - 14 - w, y, w, logoH); used = true; } catch(e) {}
+    const dataUrl = imageToPngDataUrl(mallImg);
+    if (dataUrl) {
+      const w = logoH * (mallImg.naturalWidth / mallImg.naturalHeight);
+      try { doc.addImage(dataUrl, "PNG", pageWidth - 14 - w, y, w, logoH); used = true; } catch(e) {}
+    }
   }
   return used ? y + logoH + 5 : y;
 }
