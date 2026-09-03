@@ -1,0 +1,22 @@
+{
+  "operations": {
+    "enabled": true,
+    "liveChairStatus": true,
+    "todaysSummary": true,
+    "paymentMethodBreakdown": false
+  },
+  "receipts": {
+    "enabled": true
+  },
+  "mdshare": {
+    "enabled": true,
+    "overview": true,
+    "revenueShareReport": true,
+    "settlementReport": true
+  },
+  "analytics": {
+    "enabled": true,
+    "revenue": true,
+    "monthlyRevenue": true
+  }
+}
