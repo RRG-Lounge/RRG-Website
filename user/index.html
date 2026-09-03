@@ -156,6 +156,34 @@ async function loadMallsList(){
   }
 }
 
+// ---------------------------------------------------------------------------
+// Self-service visibility settings -- same file-in-repo pattern as malls.json. Edit
+// /mall-admin-visibility.json directly on GitHub (true/false per section) to show or hide a
+// tab or panel for Mall Admin -- no code change needed. Missing keys default to visible (true),
+// so an incomplete or missing config file never silently hides something unintended.
+// ---------------------------------------------------------------------------
+let visibilityConfig = {};
+async function loadVisibilityConfig(){
+  try {
+    const res = await fetch("/mall-admin-visibility.json", { cache: "no-cache" });
+    if (!res.ok) throw new Error("no visibility config");
+    visibilityConfig = await res.json();
+  } catch (e) {
+    visibilityConfig = {}; // fine -- isVisible() defaults everything to true below
+  }
+}
+// Reads a dotted path like "operations.paymentMethodBreakdown" out of visibilityConfig.
+// Anything not explicitly set to false is treated as visible.
+function isVisible(path){
+  const parts = path.split(".");
+  let node = visibilityConfig;
+  for (const p of parts) {
+    if (node == null || typeof node !== "object") return true;
+    node = node[p];
+  }
+  return node !== false;
+}
+
 function currentMall(){
   if (!mallsList.length) return null;
   return mallsList.find(m => m.id === selectedMallId) || mallsList[0];
@@ -377,6 +405,18 @@ async function doLogin(){
 
 async function buildApp(){
   if (!mallsList.length) await loadMallsList();
+  await loadVisibilityConfig();
+
+  const allTabs = [
+    { id: "operations", label: "Operations" },
+    { id: "receipts", label: "Receipts" },
+    { id: "mdshare", label: "Mall Share" },
+    { id: "analytics", label: "Analytics" }
+  ];
+  const visibleTabs = allTabs.filter(t => isVisible(t.id + ".enabled"));
+  if (!visibleTabs.some(t => t.id === currentTab)) currentTab = (visibleTabs[0] || allTabs[0]).id;
+  const tabsHtml = visibleTabs.map(t => `<div class="tab${t.id === currentTab ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("");
+
   document.getElementById("root").innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
@@ -397,11 +437,7 @@ async function buildApp(){
         </div>
       </div>
     </div>
-    <div class="tabs">
-      <div class="tab active" data-tab="operations">Operations</div>
-      <div class="tab" data-tab="receipts">Receipts</div>
-      <div class="tab" data-tab="mdshare">Mall Share</div>
-    </div>
+    <div class="tabs">${tabsHtml}</div>
     <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
 
   document.querySelectorAll(".tab").forEach(tabEl => {
@@ -460,6 +496,7 @@ async function buildApp(){
 function render(){
   if (currentTab === "receipts") { renderReceiptsTab(); return; }
   if (currentTab === "mdshare") { renderMallShareTab(); return; }
+  if (currentTab === "analytics") { renderAnalyticsTab(); return; }
   renderOperationsTab();
 }
 
@@ -498,6 +535,18 @@ function renderOperationsTab(){
   const grandCount = methodRowOrder.reduce((a,k) => a + methodTotals[k].count, 0);
   const grandAmount = methodRowOrder.reduce((a,k) => a + methodTotals[k].amount, 0);
 
+  const paymentPanelHtml = isVisible("operations.paymentMethodBreakdown") ? `
+    <div class="panel">
+      <div class="panel-title">Payment Method Breakdown \u2014 Today</div>
+      <table>
+        <thead><tr><th>Method</th><th>Transactions</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${methodRows}
+          <tr><td><b>Total Collected</b></td><td><b>${grandCount}</b></td><td><b>${fmtMoney(grandAmount)}</b></td></tr>
+        </tbody>
+      </table>
+    </div>` : "";
+
   el.innerHTML = `
     <div class="panel">
       <div class="panel-title">Live Chair Status</div>
@@ -513,16 +562,7 @@ function renderOperationsTab(){
         <tr><td><b>Today's Revenue</b></td><td><b>${fmtMoney(revenue)}</b></td></tr>
       </table>
     </div>
-    <div class="panel">
-      <div class="panel-title">Payment Method Breakdown \u2014 Today</div>
-      <table>
-        <thead><tr><th>Method</th><th>Transactions</th><th>Amount</th></tr></thead>
-        <tbody>
-          ${methodRows}
-          <tr><td><b>Total Collected</b></td><td><b>${grandCount}</b></td><td><b>${fmtMoney(grandAmount)}</b></td></tr>
-        </tbody>
-      </table>
-    </div>
+    ${paymentPanelHtml}
   `;
 }
 
@@ -1235,6 +1275,64 @@ async function renderMallShareTab(){
   document.getElementById("srExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportExcel(from, to, settlementsInBusinessPeriod(from, to)); }));
 }
 function todayStrFromDate(d){ return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
+
+/* ========================= ANALYTICS TAB (view only) =========================
+   Reuses the same all-time session data already loaded for Mall Share -- no extra Firestore
+   reads if that tab's been opened once already this session. */
+async function renderAnalyticsTab(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  el.classList.remove("op-grid");
+  el.innerHTML = `<p class="panel-help">Loading\u2026</p>`;
+  if (!mallShareLoaded) {
+    try { await loadMallShareData(); }
+    catch (e) { el.innerHTML = `<p class="panel-help">Couldn't load Analytics data: ${escapeHtml(e.message)}</p>`; return; }
+  }
+  const todayS = todayStr();
+  const dates = mallShareSessions.map(s => s.date).sort();
+  const earliest = dates[0] || todayS;
+  const now = new Date();
+  const weekStart = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()));
+  const monthStart = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1));
+
+  const revenuePanel = isVisible("analytics.revenue") ? `
+    <div class="panel">
+      <div class="panel-title">Revenue</div>
+      <table>
+        <tr><td>Today</td><td>${fmtMoney(computeMdSummary(todayS, todayS).totalRevenue)}</td></tr>
+        <tr><td>This Week</td><td>${fmtMoney(computeMdSummary(weekStart, todayS).totalRevenue)}</td></tr>
+        <tr><td>This Month</td><td>${fmtMoney(computeMdSummary(monthStart, todayS).totalRevenue)}</td></tr>
+        <tr><td><b>All-Time</b></td><td><b>${fmtMoney(computeMdSummary(earliest, todayS).totalRevenue)}</b></td></tr>
+      </table>
+    </div>` : "";
+
+  let monthlyPanel = "";
+  if (isVisible("analytics.monthlyRevenue")) {
+    const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const monthRows = MONTH_NAMES.map((name, i) => {
+      const monthFrom = `2026-${String(i+1).padStart(2,"0")}-01`;
+      const daysInMonth = new Date(2026, i+1, 0).getDate();
+      const monthTo = `2026-${String(i+1).padStart(2,"0")}-${String(daysInMonth).padStart(2,"0")}`;
+      const rev = computeMdSummary(monthFrom, monthTo).totalRevenue;
+      return { name, rev };
+    });
+    const yearTotal = monthRows.reduce((a,m) => a + m.rev, 0);
+    const maxRev = Math.max(1, ...monthRows.map(m => m.rev));
+    monthlyPanel = `
+    <div class="panel">
+      <div class="panel-title">2026 Monthly Revenue</div>
+      <table>
+        <thead><tr><th>Month</th><th>Revenue</th><th></th></tr></thead>
+        <tbody>
+          ${monthRows.map(m => `<tr><td>${m.name}</td><td>${fmtMoney(m.rev)}</td><td style="width:40%;"><div style="background:var(--copper-light);height:10px;border-radius:4px;width:${Math.round(m.rev/maxRev*100)}%;"></div></td></tr>`).join("")}
+          <tr><td><b>2026 Total</b></td><td><b>${fmtMoney(yearTotal)}</b></td><td></td></tr>
+        </tbody>
+      </table>
+    </div>`;
+  }
+
+  el.innerHTML = (revenuePanel + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
+}
 
 window.addEventListener("DOMContentLoaded", () => {
   fbAuth.onAuthStateChanged(async (user) => {
