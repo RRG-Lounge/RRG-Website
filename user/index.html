@@ -29,8 +29,13 @@
   /* Fluid base size: this whole dashboard is read-only, viewed at everything from a phone to a
      large monitor, so text scales smoothly with viewport width instead of sitting at one fixed
      size -- ~15px on a small phone up to ~19px on a large desktop. Every size below is in rem,
-     so it scales together with this. */
-  html { font-size: clamp(15px, 0.55vw + 13.3px, 19px); }
+     so it scales together with this.
+     iOS Safari separately auto-boosts rendered text size on top of whatever CSS computes, but
+     doesn't apply that same boost to images -- on a fluid rem+clamp() layout like this one, that
+     mismatch is exactly what causes text to render far bigger than the layout was sized for while
+     logos stay put, producing the overlap. text-size-adjust:100% turns that auto-boost off so
+     what's rendered actually matches what was laid out. */
+  html { font-size: clamp(15px, 0.55vw + 13.3px, 19px); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   body { margin: 0; background: var(--cream); color: var(--ink); font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
   #root { max-width: var(--max); margin: 0 auto; min-height: 100vh; }
   .topbar, .tabs, .content { max-width: var(--max); margin-left: auto; margin-right: auto; }
@@ -50,7 +55,7 @@
   .btn { width: 100%; padding: 14px; border-radius: 8px; border: none; background: var(--copper); color: #fff; font-weight: 600; font-size: 1.1rem; cursor: pointer; font-family: 'Inter', sans-serif; }
   .btn:disabled { opacity: 0.5; }
   .login-error { color: #b3432f; font-size: 0.9rem; margin-top: 10px; text-align: center; min-height: 16px; }
-  .topbar { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px 8px; gap: 12px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px 8px; gap: 12px; flex-wrap: wrap; }
   .topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .topbar-right { display: flex; align-items: center; gap: 10px; }
   .topbar img.brand-logo { height: 2.4rem; width: auto; display: none; } /* shown via JS once a file is found */
