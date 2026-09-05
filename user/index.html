@@ -121,7 +121,7 @@ const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
 let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "" };
-let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [];
+let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [], queueRows = [];
 let unsubs = [];
 let currentTab = "operations";
 
@@ -376,7 +376,7 @@ function buildLogin(errorMsg){
     <div class="login-wrap">
       <div class="login-card">
         <div class="login-brand">RRG Lounge</div>
-        <div class="login-sub">Mall Admin Portal</div>
+        <div class="login-sub">Staff & Mall Admin Login</div>
         <div class="field"><label>Staff ID</label><input id="loginId" autocapitalize="off"></div>
         <div class="field"><label>PIN</label><input id="loginPin" type="password" inputmode="numeric"></div>
         <button class="btn" id="loginBtn">Login</button>
@@ -386,6 +386,8 @@ function buildLogin(errorMsg){
   document.getElementById("loginBtn").addEventListener("click", doLogin);
   document.getElementById("loginPin").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 }
+
+let currentUserRole = null;
 
 async function doLogin(){
   const staffId = document.getElementById("loginId").value.trim();
@@ -397,7 +399,8 @@ async function doLogin(){
     const cred = await fbAuth.signInWithEmailAndPassword(`${staffId}@rrglounge.local`, pin);
     const token = await cred.user.getIdTokenResult(true);
     if (token.claims.active !== true) { await fbAuth.signOut(); buildLogin("This account has been disabled."); return; }
-    if (token.claims.role !== "mall_admin") { await fbAuth.signOut(); buildLogin("This login isn't a Mall Admin account. This page is for Mall Admin access only."); return; }
+    if (!token.claims.role) { await fbAuth.signOut(); buildLogin("Account isn't fully set up yet. Please see Admin."); return; }
+    currentUserRole = token.claims.role;
     await buildApp();
   } catch (e) {
     let msg = "Couldn't sign in. Please try again.";
@@ -412,13 +415,30 @@ async function buildApp(){
   if (!mallsList.length) await loadMallsList();
   await loadVisibilityConfig();
 
-  const allTabs = [
-    { id: "operations", label: "Operations" },
-    { id: "receipts", label: "Receipts" },
-    { id: "mdshare", label: "Mall Share" },
-    { id: "analytics", label: "Analytics" }
-  ];
-  const visibleTabs = allTabs.filter(t => isVisible(t.id + ".enabled"));
+  // Which tabs exist at all depends on WHO logged in -- mall_admin gets the read-only reporting
+  // suite (further narrowed by mall-admin-visibility.json below); staff gets just the queue tool
+  // they need at the chair; anyone else (you, or any other internal role) gets the queue tool
+  // plus Operations/Receipts, so either the desk or a phone can be the one assigning chairs.
+  let allTabs;
+  if (currentUserRole === "mall_admin") {
+    allTabs = [
+      { id: "operations", label: "Operations" },
+      { id: "receipts", label: "Receipts" },
+      { id: "mdshare", label: "Mall Share" },
+      { id: "analytics", label: "Analytics" }
+    ];
+  } else if (currentUserRole === "staff") {
+    allTabs = [ { id: "queue", label: "Queue" } ];
+  } else {
+    allTabs = [
+      { id: "queue", label: "Queue" },
+      { id: "operations", label: "Operations" },
+      { id: "receipts", label: "Receipts" }
+    ];
+  }
+  // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
+  // control what Mall Admin sees; it was never meant to also gate your own or staff's tools.
+  const visibleTabs = currentUserRole === "mall_admin" ? allTabs.filter(t => isVisible(t.id + ".enabled")) : allTabs;
   if (!visibleTabs.some(t => t.id === currentTab)) currentTab = (visibleTabs[0] || allTabs[0]).id;
   const tabsHtml = visibleTabs.map(t => `<div class="tab${t.id === currentTab ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("");
 
@@ -428,7 +448,7 @@ async function buildApp(){
         <img id="rrgLogoImg" class="brand-logo" alt="RRG Lounge">
         <div class="topbar-titles">
           <div class="mall-name" id="mallNameLabel">RRG Lounge</div>
-          <div class="portal-label">Mall Admin Portal</div>
+          <div class="portal-label">${currentUserRole === "mall_admin" ? "Mall Admin Portal" : (currentUserRole === "staff" ? "Staff Access" : "Staff & Admin Access")}</div>
           <div id="mallPickerWrap" style="display:none;">
             <select class="mall-picker" id="mallPickerSelect"></select>
           </div>
@@ -496,12 +516,22 @@ async function buildApp(){
     adjustmentsToday = snap.docs.map(d => d.data());
     render();
   }));
+
+  // Queue tab (staff, and anyone else who isn't mall_admin) needs the live waiting queue too.
+  // Chair busy/free status is derived from sessionsToday above -- no separate listener needed.
+  if (currentUserRole !== "mall_admin") {
+    unsubs.push(fsDb.collection("waitingQueue").onSnapshot(snap => {
+      queueRows = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+      render();
+    }, err => { console.warn("Queue listener error:", err.message); }));
+  }
 }
 
 function render(){
   if (currentTab === "receipts") { renderReceiptsTab(); return; }
   if (currentTab === "mdshare") { renderMallShareTab(); return; }
   if (currentTab === "analytics") { renderAnalyticsTab(); return; }
+  if (currentTab === "queue") { renderQueueTab(); return; }
   renderOperationsTab();
 }
 
@@ -1281,6 +1311,106 @@ async function renderMallShareTab(){
 }
 function todayStrFromDate(d){ return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
 
+/* ========================= QUEUE TAB (staff + admin, not mall_admin) =========================
+   Ported from RRG_Staff_Queue_View.html -- same two real writes as that file (toggle "called",
+   start a token on a chair), same narrow scope: never touches checkout, pricing, or payment.
+   Chair busy/free status is derived from sessionsToday (already loaded for Operations) instead
+   of a separate "sessions where running" listener, since that data's already on hand here. */
+function freeMatchingChairs(unitType){
+  const busy = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
+  return activeChairOrder().filter(c => unitTypeOf(c) === unitType && !busy.has(c));
+}
+
+function renderQueueTab(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  el.classList.remove("op-grid");
+  const busyNames = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
+  const chairRows = [...busyNames].sort().map(name => `
+    <tr><td><span class="dot dot-red"></span>${escapeHtml(name)}</td><td>Running</td></tr>
+  `).join("");
+
+  const sorted = queueRows.slice().sort((a,b) => (a.addedAt||0) - (b.addedAt||0));
+  const queueHtml = !sorted.length ? `<p class="panel-help">No one waiting right now.</p>` : sorted.map(q => {
+    const freeChairs = freeMatchingChairs(q.unitType);
+    return `
+    <div class="panel" style="${q.called ? "opacity:0.6;" : ""}">
+      <div style="font-weight:700; font-size:1.15rem;">${escapeHtml(q.label || "Token")}</div>
+      <div class="panel-help" style="margin-bottom:4px;">${escapeHtml(q.unitType || "")} \u00b7 ${escapeHtml(q.packageLabel || "")}${q.customerName ? " \u00b7 " + escapeHtml(q.customerName) : ""}</div>
+      <div style="margin-bottom:8px;">
+        <span class="btn-small btn-outline" style="display:inline-block;">${q.paid ? "Paid" : "Not yet paid"}</span>
+        ${q.called ? `<span class="btn-small btn-outline" style="display:inline-block;">Called</span>` : ""}
+      </div>
+      <button class="btn-outline btn-small call-btn" style="width:100%; padding:10px; margin-bottom:8px;" data-action="call" data-id="${q.id}">${q.called ? "Marked as Called \u2014 tap to undo" : "Mark as Called"}</button>
+      ${freeChairs.length ? `
+        <select data-action="start" data-id="${q.id}" style="width:100%; padding:10px; border-radius:6px; border:1px solid var(--line); background:var(--cream); color:var(--ink); font-family:'Inter',sans-serif;">
+          <option value="">Start on a chair\u2026</option>
+          ${freeChairs.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
+        </select>
+      ` : `<p class="panel-help">No matching unit free right now.</p>`}
+    </div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Waiting Queue</div>
+      ${queueHtml}
+    </div>
+    <div class="panel">
+      <div class="panel-title">Chair Status</div>
+      ${busyNames.size ? `<table><thead><tr><th>Unit</th><th>Status</th></tr></thead><tbody>${chairRows}</tbody></table>` : `<p class="panel-help">All units free.</p>`}
+    </div>
+  `;
+
+  el.querySelectorAll(".call-btn").forEach(b => b.addEventListener("click", async () => {
+    const id = parseInt(b.dataset.id, 10);
+    const q = queueRows.find(x => x.id === id);
+    if (!q) return;
+    b.disabled = true;
+    try {
+      await fsDb.collection("waitingQueue").doc(String(id)).update({ called: !q.called, calledAt: !q.called ? Date.now() : null, calledBy: !q.called ? (fbAuth.currentUser.email.split("@")[0]) : null });
+    } catch (e) {
+      if (e.code === "not-found") alert("This token has already been started (by the desk or another phone) \u2014 it's no longer in the waiting queue.");
+      else alert("Couldn't update: " + e.message);
+    }
+    b.disabled = false;
+  }));
+  el.querySelectorAll('select[data-action="start"]').forEach(sel => sel.addEventListener("change", async () => {
+    const id = parseInt(sel.dataset.id, 10);
+    const chairName = sel.value;
+    if (!chairName) return;
+    const ok = await startFromQueue(id, chairName);
+    if (!ok) sel.value = "";
+  }));
+}
+
+// Directly starts the session -- the same real action the desk's "Start on Chair" button
+// performs. A confirmation showing the exact token, customer, package, and chair is the safety
+// net: the moment to catch "wrong chair" or "wrong person" before it's locked in. Deliberately
+// does NOT touch payment or printing -- purely a status change (chair assigned, timer begins).
+async function startFromQueue(qid, chairName){
+  const q = queueRows.find(x => x.id === qid);
+  if (!q) return false;
+  if (sessionsToday.some(s => s.status === "running" && s.chairName === chairName)) {
+    alert(`${chairName} isn't free anymore \u2014 pick another available unit.`);
+    return false;
+  }
+  const confirmMsg = `Start ${q.label || "this token"}${q.customerName ? " \u2014 " + q.customerName : ""} (${q.packageLabel || ""}) on ${chairName}?`;
+  if (!confirm(confirmMsg)) return false;
+  try {
+    if (!q.sessionId) { alert("This token has no linked record \u2014 please start it from the main dashboard instead."); return false; }
+    const sessionRef = fsDb.collection("sessions").doc(String(q.sessionId));
+    const sessionSnap = await sessionRef.get();
+    if (!sessionSnap.exists) { alert("Couldn't find this booking's record \u2014 please start it from the main dashboard instead."); return false; }
+    await sessionRef.update({ chairName, status: "running", startTs: Date.now(), endTs: null });
+    await fsDb.collection("waitingQueue").doc(String(qid)).delete();
+    return true;
+  } catch (e) {
+    alert("Couldn't start this session: " + e.message);
+    return false;
+  }
+}
+
 /* ========================= ANALYTICS TAB (view only) =========================
    Reuses the same all-time session data already loaded for Mall Share -- no extra Firestore
    reads if that tab's been opened once already this session. */
@@ -1344,7 +1474,8 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!user) { buildLogin(); return; }
     try {
       const token = await user.getIdTokenResult(true);
-      if (token.claims.active !== true || token.claims.role !== "mall_admin") { await fbAuth.signOut(); buildLogin(); return; }
+      if (token.claims.active !== true || !token.claims.role) { await fbAuth.signOut(); buildLogin(); return; }
+      currentUserRole = token.claims.role;
       await buildApp();
     } catch (e) { await fbAuth.signOut(); buildLogin(); }
   });
