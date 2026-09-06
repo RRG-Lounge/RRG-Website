@@ -531,7 +531,11 @@ function render(){
   if (currentTab === "receipts") { renderReceiptsTab(); return; }
   if (currentTab === "mdshare") { renderMallShareTab(); return; }
   if (currentTab === "analytics") { renderAnalyticsTab(); return; }
-  if (currentTab === "queue") { renderQueueTab(); return; }
+  if (currentTab === "queue") {
+    if (queueInteractionActive) { queueRerenderPending = true; return; }
+    renderQueueTab();
+    return;
+  }
   renderOperationsTab();
 }
 
@@ -1321,6 +1325,15 @@ function freeMatchingChairs(unitType){
   return activeChairOrder().filter(c => unitTypeOf(c) === unitType && !busy.has(c));
 }
 
+// A live Firestore update (someone else marking a token called, a new booking arriving) calls
+// render() at any moment. If that happens to land while a chair-picker dropdown is actually open,
+// the whole panel gets rebuilt underneath the user's finger and their in-progress tap is lost --
+// this is exactly what looked like "selecting a chair doesn't do anything." These two flags pause
+// re-rendering the Queue tab specifically while a dropdown is open, and catch up the moment it
+// closes, so a live update can never interrupt a selection in progress.
+let queueInteractionActive = false;
+let queueRerenderPending = false;
+
 function renderQueueTab(){
   const el = document.getElementById("mainContent");
   if (!el) return;
@@ -1375,13 +1388,20 @@ function renderQueueTab(){
     }
     b.disabled = false;
   }));
-  el.querySelectorAll('select[data-action="start"]').forEach(sel => sel.addEventListener("change", async () => {
-    const id = parseInt(sel.dataset.id, 10);
-    const chairName = sel.value;
-    if (!chairName) return;
-    const ok = await startFromQueue(id, chairName);
-    if (!ok) sel.value = "";
-  }));
+  el.querySelectorAll('select[data-action="start"]').forEach(sel => {
+    sel.addEventListener("focus", () => { queueInteractionActive = true; });
+    sel.addEventListener("blur", () => {
+      queueInteractionActive = false;
+      if (queueRerenderPending) { queueRerenderPending = false; renderQueueTab(); }
+    });
+    sel.addEventListener("change", async () => {
+      const id = parseInt(sel.dataset.id, 10);
+      const chairName = sel.value;
+      if (!chairName) return;
+      const ok = await startFromQueue(id, chairName);
+      if (!ok) sel.value = "";
+    });
+  });
 }
 
 // Directly starts the session -- the same real action the desk's "Start on Chair" button
