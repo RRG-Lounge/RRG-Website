@@ -498,11 +498,11 @@ async function buildApp(){
     liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "" };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
-    render();
+    requestRender();
   }));
   unsubs.push(fsDb.collection("sessions").where("date", "==", today).onSnapshot(snap => {
     sessionsToday = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
-    render();
+    requestRender();
   }));
   // paymentSplits/invoiceAdjustments aren't dated directly -- keyed by invoiceNo, which embeds
   // the date (e.g. RRG-FY26-09-01-004), so today's slice is found by prefix match instead of a
@@ -510,11 +510,11 @@ async function buildApp(){
   const invPrefix = `RRG-FY${today.slice(2,4)}-${today.slice(5,7)}-${today.slice(8,10)}`;
   unsubs.push(fsDb.collection("paymentSplits").where("invoiceNo", ">=", invPrefix).where("invoiceNo", "<", invPrefix + "\uf8ff").onSnapshot(snap => {
     paymentSplitsToday = snap.docs.map(d => d.data());
-    render();
+    requestRender();
   }));
   unsubs.push(fsDb.collection("invoiceAdjustments").where("invoiceNo", ">=", invPrefix).where("invoiceNo", "<", invPrefix + "\uf8ff").onSnapshot(snap => {
     adjustmentsToday = snap.docs.map(d => d.data());
-    render();
+    requestRender();
   }));
 
   // Queue tab (staff, and anyone else who isn't mall_admin) needs the live waiting queue too.
@@ -522,13 +522,34 @@ async function buildApp(){
   if (currentUserRole !== "mall_admin") {
     unsubs.push(fsDb.collection("waitingQueue").onSnapshot(snap => {
       queueRows = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
-      render();
-    }, err => { console.warn("Queue listener error:", err.message); }));
+      lastQueueSyncTs = Date.now();
+      queueListenerError = null;
+      requestRender();
+    }, err => {
+      lastQueueSyncTs = null; // makes staleness visible instead of silently trusting old data
+      console.warn("Queue listener error:", err.message);
+      if (currentTab === "queue") { queueListenerError = err.message; requestRender(); }
+    }));
+    // A stalled connection would otherwise leave the "Synced Xs ago" label frozen at whatever it
+    // said when things stopped updating -- ticking it forward independently of Firestore activity
+    // is what actually makes staleness visible rather than silently trusting old data on screen.
+    unsubs.push(() => clearInterval(queueStaleTicker));
+    queueStaleTicker = setInterval(() => { if (currentTab === "queue") render(); }, 5000);
   }
 }
 
-function render(){
-  if (currentTab === "receipts") { renderReceiptsTab(); return; }
+// On a busy day, several Firestore updates can land within the same second (a chair status
+// change, someone else marking a token called, etc.) -- each one calling render() separately
+// means several full panel rebuilds back-to-back, which is exactly what a "lag"/flicker feeling
+// on a real phone comes from. Coalescing them into one render a beat later fixes that without
+// changing what gets shown -- direct user actions (switching tabs) still render immediately.
+let renderDebounceTimer = null;
+function requestRender(){
+  if (renderDebounceTimer) return;
+  renderDebounceTimer = setTimeout(() => { renderDebounceTimer = null; render(); }, 120);
+}
+
+function render(){  if (currentTab === "receipts") { renderReceiptsTab(); return; }
   if (currentTab === "mdshare") { renderMallShareTab(); return; }
   if (currentTab === "analytics") { renderAnalyticsTab(); return; }
   if (currentTab === "queue") {
@@ -1325,6 +1346,45 @@ function freeMatchingChairs(unitType){
   return activeChairOrder().filter(c => unitTypeOf(c) === unitType && !busy.has(c));
 }
 
+// Best-effort "ready by" estimate for a waiting token: soonest matching chair frees up, in queue
+// order (anyone ahead in line for the SAME unit type claims the earlier slot first). This is my
+// own approximation of the same logic principle the main dashboard's printed estimate uses --
+// I don't have that dashboard's exact source, so treat this as a good-faith estimate, not a
+// guaranteed match to what was printed at booking.
+function estimateReadyTs(q){
+  const now = Date.now();
+  const chairsOfType = activeChairOrder().filter(c => unitTypeOf(c) === q.unitType);
+  if (!chairsOfType.length) return null;
+  const freeTimes = chairsOfType.map(c => {
+    const running = getRunningSession(c);
+    return running ? sessionEffectiveEndTs(running) : now;
+  }).sort((a,b) => a - b);
+
+  const sameType = queueRows.filter(x => x.unitType === q.unitType).slice().sort((a,b) => (a.addedAt||0) - (b.addedAt||0));
+  const myRank = sameType.findIndex(x => x.id === q.id);
+  if (myRank < 0) return null;
+  // Assign each queued item (in order) to whichever chair is soonest free, then that chair's
+  // next-free-time becomes "start + this item's own duration" for whoever's next behind it.
+  const slots = freeTimes.slice();
+  let readyAt = now;
+  for (let i = 0; i <= myRank; i++) {
+    slots.sort((a,b) => a - b);
+    const startAt = Math.max(now, slots[0]);
+    const durMatch = String(sameType[i].packageLabel || "").match(/(\d+)\s*m/i);
+    const durMin = durMatch ? parseInt(durMatch[1], 10) : 10; // fallback if unparsable
+    slots[0] = startAt + durMin * 60000;
+    readyAt = startAt;
+  }
+  return readyAt;
+}
+function formatReadyEstimate(readyAt){
+  if (readyAt == null) return "";
+  const mins = Math.round((readyAt - Date.now()) / 60000);
+  const timeLabel = new Date(readyAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
+  if (mins <= 0) return `Ready now`;
+  return `Est. ready ~${mins} min (${timeLabel})`;
+}
+
 // A live Firestore update (someone else marking a token called, a new booking arriving) calls
 // render() at any moment. If that happens to land while a chair-picker dropdown is actually open,
 // the whole panel gets rebuilt underneath the user's finger and their in-progress tap is lost --
@@ -1333,11 +1393,29 @@ function freeMatchingChairs(unitType){
 // closes, so a live update can never interrupt a selection in progress.
 let queueInteractionActive = false;
 let queueRerenderPending = false;
+let queueInteractionSafetyTimer = null;
+let lastQueueSyncTs = null;
+let queueListenerError = null;
+let queueStaleTicker = null;
 
 function renderQueueTab(){
   const el = document.getElementById("mainContent");
   if (!el) return;
   el.classList.remove("op-grid");
+  try {
+    renderQueueTabInner(el);
+  } catch (e) {
+    // Fail visibly. A silent failure here would leave whatever was on screen before frozen in
+    // place with zero indication anything's wrong -- exactly the dangerous kind of bug for a
+    // live queue. Showing the real error means it's diagnosable immediately instead of a mystery.
+    el.innerHTML = `<div class="panel"><div class="panel-title">Couldn't load the Queue</div><p class="panel-help">${escapeHtml(e.message)}</p><p class="panel-help">Try reloading the page. If this keeps happening, send this exact message along.</p></div>`;
+    console.error("renderQueueTab failed:", e);
+  }
+}
+
+function renderQueueTabInner(el){
+  const syncAgoSec = lastQueueSyncTs ? Math.round((Date.now() - lastQueueSyncTs) / 1000) : null;
+  const syncLabel = syncAgoSec == null ? "Not synced yet" : (syncAgoSec < 3 ? "Synced just now" : `Synced ${syncAgoSec}s ago`);
   const busyNames = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
   const chairRows = [...busyNames].sort().map(name => `
     <tr><td><span class="dot dot-red"></span>${escapeHtml(name)}</td><td>Running</td></tr>
@@ -1346,10 +1424,11 @@ function renderQueueTab(){
   const sorted = queueRows.slice().sort((a,b) => (a.addedAt||0) - (b.addedAt||0));
   const queueHtml = !sorted.length ? `<p class="panel-help">No one waiting right now.</p>` : sorted.map(q => {
     const freeChairs = freeMatchingChairs(q.unitType);
+    const readyEstimate = freeChairs.length ? "" : formatReadyEstimate(estimateReadyTs(q));
     return `
     <div class="panel" style="${q.called ? "opacity:0.6;" : ""}">
       <div style="font-weight:700; font-size:1.15rem;">${escapeHtml(q.label || "Token")}</div>
-      <div class="panel-help" style="margin-bottom:4px;">${escapeHtml(q.unitType || "")} \u00b7 ${escapeHtml(q.packageLabel || "")}${q.customerName ? " \u00b7 " + escapeHtml(q.customerName) : ""}</div>
+      <div class="panel-help" style="margin-bottom:4px;">${escapeHtml(q.unitType || "")} \u00b7 ${escapeHtml(q.packageLabel || "")}${q.customerName ? " \u00b7 " + escapeHtml(q.customerName) : ""}${readyEstimate ? " \u00b7 " + escapeHtml(readyEstimate) : ""}</div>
       <div style="margin-bottom:8px;">
         <span class="btn-small btn-outline" style="display:inline-block;">${q.paid ? "Paid" : "Not yet paid"}</span>
         ${q.called ? `<span class="btn-small btn-outline" style="display:inline-block;">Called</span>` : ""}
@@ -1367,6 +1446,8 @@ function renderQueueTab(){
   el.innerHTML = `
     <div class="panel">
       <div class="panel-title">Waiting Queue</div>
+      <p class="panel-help">${escapeHtml(syncLabel)}${syncAgoSec != null && syncAgoSec > 20 ? " \u2014 this looks stale, try reloading the page" : ""}</p>
+      ${queueListenerError ? `<p class="panel-help" style="color:#b3432f;">Couldn't load the live queue: ${escapeHtml(queueListenerError)}. Please reload the page.</p>` : ""}
       ${queueHtml}
     </div>
     <div class="panel">
@@ -1389,8 +1470,19 @@ function renderQueueTab(){
     b.disabled = false;
   }));
   el.querySelectorAll('select[data-action="start"]').forEach(sel => {
-    sel.addEventListener("focus", () => { queueInteractionActive = true; });
+    sel.addEventListener("focus", () => {
+      queueInteractionActive = true;
+      // Safety net: if blur never fires for some reason (app backgrounded mid-tap, etc.), don't
+      // let this stay stuck forever and silently block every future update -- release it after
+      // a few seconds no one could plausibly still be mid-selection.
+      clearTimeout(queueInteractionSafetyTimer);
+      queueInteractionSafetyTimer = setTimeout(() => {
+        queueInteractionActive = false;
+        if (queueRerenderPending) { queueRerenderPending = false; renderQueueTab(); }
+      }, 8000);
+    });
     sel.addEventListener("blur", () => {
+      clearTimeout(queueInteractionSafetyTimer);
       queueInteractionActive = false;
       if (queueRerenderPending) { queueRerenderPending = false; renderQueueTab(); }
     });
@@ -1422,8 +1514,15 @@ async function startFromQueue(qid, chairName){
     const sessionRef = fsDb.collection("sessions").doc(String(q.sessionId));
     const sessionSnap = await sessionRef.get();
     if (!sessionSnap.exists) { alert("Couldn't find this booking's record \u2014 please start it from the main dashboard instead."); return false; }
-    await sessionRef.update({ chairName, status: "running", startTs: Date.now(), endTs: null });
-    await fsDb.collection("waitingQueue").doc(String(qid)).delete();
+    // Both writes MUST land together -- on a flaky mobile connection, doing these as two
+    // separate sequential calls meant a dropped second call (the queue delete) could leave the
+    // queue entry behind even though the session had already actually started, making it look
+    // like the assign silently failed and needed doing again. A batch makes that impossible:
+    // either both writes commit, or neither does.
+    const batch = fsDb.batch();
+    batch.update(sessionRef, { chairName, status: "running", startTs: Date.now(), endTs: null });
+    batch.delete(fsDb.collection("waitingQueue").doc(String(qid)));
+    await batch.commit();
     return true;
   } catch (e) {
     alert("Couldn't start this session: " + e.message);
