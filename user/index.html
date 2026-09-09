@@ -1599,6 +1599,18 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (e) { await fbAuth.signOut(); buildLogin(); }
   });
 });
+
+// Phones aggressively pause a backgrounded browser tab to save battery (screen lock, switching
+// apps) -- the live Firestore connection can go quiet and not always resume cleanly on its own
+// when the tab comes back to the foreground. Forcing a network re-check the moment the page
+// becomes visible again fixes the "shows stale data until I manually reload" symptom directly,
+// instead of relying on the staleness warning alone to prompt a manual reload every time.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && fbAuth.currentUser) {
+    fsDb.disableNetwork().then(() => fsDb.enableNetwork()).catch(() => {});
+    render();
+  }
+});
 </script>
 </body>
 </html>
