@@ -138,6 +138,7 @@ async function doLogin(){
     const token = await cred.user.getIdTokenResult(true);
     if (token.claims.active !== true) { await fbAuth.signOut(); buildLogin("This account has been disabled. Please see Admin."); return; }
     if (!token.claims.role) { await fbAuth.signOut(); buildLogin("Account isn't fully set up yet. Please see Admin."); return; }
+    if (token.claims.role === "mall_admin") { await fbAuth.signOut(); buildLogin("This page is for staff use only. Please use the Mall Admin Portal instead."); return; }
     currentUser = { uid: cred.user.uid, role: token.claims.role, staffId };
     buildApp();
   } catch (e) {
@@ -597,6 +598,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     try {
       const token = await user.getIdTokenResult(true);
       if (token.claims.active !== true || !token.claims.role) { await fbAuth.signOut(); buildLogin(); return; }
+      if (token.claims.role === "mall_admin") { await fbAuth.signOut(); buildLogin("This page is for staff use only. Please use the Mall Admin Portal instead."); return; }
       currentUser = { uid: user.uid, role: token.claims.role, staffId: user.email.split("@")[0] };
       buildApp();
     } catch (e) { await fbAuth.signOut(); buildLogin(); }
