@@ -1,64 +1,97 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>RRG Lounge — Staff Queue View</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RRG Lounge — Mall Admin Portal</title>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  :root{
+    --pine: #16332C;
+    --pine-2: #1F4A40;
+    --pine-3: #0E211C;
+    --cream: #F1E9D8;
+    --cream-2: #E7DCC3;
+    --copper: #C1703A;
+    --copper-light: #DE9863;
+    --ink: #16332C;
+    --line: rgba(22,51,44,0.14);
+    --max: min(96vw, 1800px);
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #121212; color: #eee; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
-  #root { max-width: 480px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; }
-  .login-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
-  .login-card { width: 100%; background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 24px; }
-  .login-brand { font-size: 22px; font-weight: 700; color: #e6be50; text-align: center; margin-bottom: 4px; }
-  .login-sub { text-align: center; color: #999; font-size: 13px; margin-bottom: 20px; }
+  /* Fluid base size: this whole dashboard is read-only, viewed at everything from a phone to a
+     large monitor, so text scales smoothly with viewport width instead of sitting at one fixed
+     size -- ~15px on a small phone up to ~19px on a large desktop. Every size below is in rem,
+     so it scales together with this.
+     iOS Safari separately auto-boosts rendered text size on top of whatever CSS computes, but
+     doesn't apply that same boost to images -- on a fluid rem+clamp() layout like this one, that
+     mismatch is exactly what causes text to render far bigger than the layout was sized for while
+     logos stay put, producing the overlap. text-size-adjust:100% turns that auto-boost off so
+     what's rendered actually matches what was laid out. */
+  html { font-size: clamp(15px, 0.55vw + 13.3px, 19px); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body { margin: 0; background: var(--cream); color: var(--ink); font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+  #root { max-width: var(--max); margin: 0 auto; min-height: 100vh; }
+  .topbar, .tabs, .content { max-width: var(--max); margin-left: auto; margin-right: auto; }
+  @media (min-width: 900px) {
+    /* Operations tab's four summary panels sit side-by-side on wider screens; Receipts' one
+       wide table panel is left alone -- it already uses the extra width itself. */
+    #mainContent.op-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; align-items: start; }
+    #mainContent.op-grid .panel { margin-bottom: 0; }
+  }
+  .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .login-card { width: 100%; max-width: 380px; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 24px; box-shadow: 0 4px 24px rgba(22,51,44,0.08); }
+  .login-brand { font-family: 'Fraunces', serif; font-weight: 600; font-size: 1.5rem; color: var(--pine); text-align: center; margin-bottom: 4px; }
+  .login-sub { text-align: center; color: var(--pine-2); opacity: 0.75; font-size: 0.9rem; margin-bottom: 20px; }
   .field { margin-bottom: 14px; }
-  .field label { display: block; font-size: 13px; color: #ccc; margin-bottom: 4px; }
-  .field input, .field select { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #444; background: #0f0f0f; color: #eee; font-size: 16px; }
-  .btn { width: 100%; padding: 14px; border-radius: 8px; border: none; background: #e6be50; color: #1a1a1a; font-weight: 700; font-size: 16px; cursor: pointer; }
+  .field label { display: block; font-size: 0.9rem; color: var(--pine-2); margin-bottom: 4px; }
+  .field input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--cream); color: var(--ink); font-size: 1.1rem; font-family: 'Inter', sans-serif; }
+  .btn { width: 100%; padding: 14px; border-radius: 8px; border: none; background: var(--copper); color: #fff; font-weight: 600; font-size: 1.1rem; cursor: pointer; font-family: 'Inter', sans-serif; }
   .btn:disabled { opacity: 0.5; }
-  .btn-outline { background: transparent; border: 1px solid #555; color: #eee; }
-  .login-error { color: #ff8080; font-size: 13px; margin-top: 10px; text-align: center; min-height: 16px; }
-  .topbar { position: sticky; top: 0; background: #1a1a1a; border-bottom: 1px solid #333; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; z-index: 10; }
-  .topbar b { color: #e6be50; }
-  .topbar button { background: transparent; border: 1px solid #555; color: #ccc; padding: 6px 12px; border-radius: 6px; font-size: 13px; }
-  .content { padding: 12px 14px 40px; }
-  .section-title { font-size: 14px; font-weight: 700; color: #e6be50; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px; }
-  .queue-card { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 14px; margin-bottom: 10px; }
-  .queue-card.called { opacity: 0.55; }
-  .queue-label { font-size: 17px; font-weight: 700; }
-  .queue-meta { font-size: 13px; color: #aaa; margin-top: 3px; }
-  .badge { display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 10px; margin-top: 6px; margin-right: 5px; }
-  .badge-paid { background: #1f4d2b; color: #7ee08c; }
-  .badge-unpaid { background: #4d2f1f; color: #e0a87e; }
-  .badge-called { background: #333; color: #ccc; }
-  .badge-assigned { background: #4a3a15; color: #e6be50; }
-  .assign-note { font-size: 12px; color: #999; margin: 8px 0 4px; }
-  .call-btn { margin-top: 10px; width: 100%; padding: 10px; border-radius: 7px; border: 1px solid #e6be50; background: transparent; color: #e6be50; font-weight: 600; font-size: 14px; }
-  .call-btn.done { border-color: #555; color: #999; }
-  .queue-card select { width: 100%; margin-top: 8px; padding: 10px; border-radius: 7px; border: 1px solid #444; background: #0f0f0f; color: #eee; font-size: 14px; }
-  .empty-note { color: #888; font-size: 14px; padding: 20px 0; text-align: center; }
-  .chair-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid #262626; font-size: 14px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 8px; }
-  .dot-free { background: #7ee08c; } .dot-busy { background: #e0a87e; }
-  .tabbar { display: flex; border-bottom: 1px solid #333; }
-  .tabbar .tab { flex: 1; text-align: center; padding: 13px 0; font-size: 14px; font-weight: 700; color: #999; border-bottom: 3px solid transparent; }
-  .tabbar .tab.active { color: #e6be50; border-bottom-color: #e6be50; }
-  .unit-group { margin-bottom: 16px; }
-  .unit-group-label { font-weight: 700; margin-bottom: 8px; }
-  .unit-group-label.chair { color: #cda53a; } .unit-group-label.leg { color: #3fa9c9; } .unit-group-label.advleg { color: #a569d4; } .unit-group-label.other { color: #d4783a; }
-  .pkg-row { display: flex; flex-wrap: wrap; gap: 8px; }
-  .pkg-btn { padding: 10px 14px; border-radius: 8px; border: none; font-weight: 700; font-size: 14px; color: #141414; }
-  .pkg-btn.chair { background: #cda53a; } .pkg-btn.leg { background: #3fa9c9; } .pkg-btn.advleg { background: #a569d4; } .pkg-btn.other { background: #d4783a; }
-  .cart-line { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #262626; font-size: 14px; }
-  .cart-line button { background: transparent; border: none; color: #e08080; font-size: 13px; }
-  .pay-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
-  .pay-btn { flex: 1; min-width: 70px; padding: 10px; border-radius: 8px; border: 1px solid #444; background: #1a1a1a; color: #ccc; font-size: 13px; font-weight: 600; }
-  .pay-btn.selected { background: #e6be50; color: #1a1a1a; border-color: #e6be50; }
-  .wait-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #262626; font-size: 14px; }
+  .login-error { color: #b3432f; font-size: 0.9rem; margin-top: 10px; text-align: center; min-height: 16px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px 8px; gap: 12px; flex-wrap: wrap; }
+  .topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .topbar img.brand-logo { height: 2.4rem; width: auto; display: none; } /* shown via JS once a file is found */
+  .topbar-titles { min-width: 0; }
+  .topbar-titles .mall-name { font-family: 'Fraunces', serif; font-weight: 600; color: var(--pine); font-size: 1.4rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-titles .portal-label { color: var(--copper); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+  .topbar-user { text-align: right; }
+  .topbar-user .user-name { color: var(--pine-2); font-size: 1rem; }
+  .topbar button { background: transparent; border: 1px solid var(--line); color: var(--pine); padding: 8px 16px; border-radius: 6px; font-family: 'Inter', sans-serif; cursor: pointer; font-size: 0.95rem; }
+  .mall-picker { background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 0.9rem; margin-top: 2px; font-family: 'Inter', sans-serif; }
+  .content { padding: 8px 20px 40px; }
+  .panel { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; margin-bottom: 16px; }
+  .panel-title { font-family: 'Fraunces', serif; font-size: 1.35rem; font-weight: 600; color: var(--pine); margin-bottom: 6px; }
+  .panel-help { font-size: 0.9rem; color: var(--pine-2); opacity: 0.75; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 1.05rem; }
+  td, th { padding: 9px 6px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--pine-2); opacity: 0.7; font-size: 0.85rem; text-transform: uppercase; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 7px; }
+  .dot-red { background: #b3432f; } .dot-amber { background: var(--copper-light); } .dot-green { background: #4a7a5e; }
+  .tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+  .tab { padding: 10px 16px; color: var(--pine-2); opacity: 0.6; cursor: pointer; font-size: 1.05rem; border-bottom: 2px solid transparent; font-weight: 500; }
+  .tab.active { color: var(--copper); opacity: 1; border-bottom-color: var(--copper); font-weight: 600; }
+  .btn-small { padding: 7px 12px; font-size: 0.9rem; width: auto; display: inline-block; }
+  .btn-outline { background: transparent; border: 1px solid var(--line); color: var(--pine); }
+  .btn-outline.qr-active { background: var(--copper); color: #fff; border-color: var(--copper); font-weight: 600; }
+  .btn:disabled { opacity: 0.6; cursor: default; }
+  .btn-primary { background: var(--copper); color: #fff; border: none; }
+  .btn-group { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 12px; }
+  .filter-field { display: flex; flex-direction: column; font-size: 0.85rem; color: var(--pine-2); opacity: 0.85; }
+  .filter-field input, .filter-field select { margin-top: 3px; padding: 8px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--cream); color: var(--ink); font-size: 0.95rem; font-family: 'Inter', sans-serif; }
+  .data-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  .data-table td, .data-table th { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .data-table th { color: var(--pine-2); opacity: 0.7; font-size: 0.8rem; text-transform: uppercase; }
+  .receipt-actions { white-space: nowrap; }
+  .receipt-actions .btn-small { margin-right: 4px; margin-bottom: 4px; }
+  .table-scroll { overflow-x: auto; }
 </style>
 </head>
 <body>
@@ -66,6 +99,14 @@
 <script>
 "use strict";
 
+// This is a deliberately minimal, self-contained, READ-ONLY page -- built as its own file rather
+// than reusing the full dashboard specifically so its source can safely sit in a public repo if
+// needed (e.g. embedded into the relaxrechargego.com website): it contains no checkout, pricing,
+// or write logic at all, nothing beyond what a Mall Admin is already meant to see. The actual
+// security boundary is real Firebase Auth + Firestore Rules (server-side, role-checked) -- NOT
+// keeping this file's source hidden. Critically: nothing on this page loads or renders until a
+// real login (Staff ID + PIN) succeeds AND the account's role is verified to be mall_admin --
+// unlike the older dashboard file, there is no bootstrap/auto-sign-in of any kind here.
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyA6BnYGNx3hKNcSxHgN9Wpyz6LkB_MUKq4",
   authDomain: "rrg-lounge-os.firebaseapp.com",
@@ -78,44 +119,264 @@ firebase.initializeApp(FIREBASE_CONFIG);
 const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
-// Deliberately narrow scope: this page only ever reads/writes waitingQueue (marking someone
-// "called") and reads sessions (to show which chairs are free). It never touches checkout,
-// payments, or printing -- those still happen at the desk, where the printer and cash drawer
-// actually are. Same Firebase Auth login as the main dashboard (Staff ID + PIN), same Firestore
-// Rules already deployed -- no new backend permissions needed for this page to work.
+const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "" };
+let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [], queueRows = [];
+let unsubs = [];
+let currentTab = "operations";
 
-let currentUser = null;
-let _visibilityListenerAdded = false;
-let unsubQueue = null, unsubSessions = null, unsubConfig = null;
-let queueRows = [], sessionRows = [], liveConfig = {
-  chairOrder: [], disabledUnits: [], unitTypes: {}, packages: {}, paymentMethods: [],
-  defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstEnabled: false, gstRate: 18, gstin: "",
-  mobileBookingEnabled: false
-};
-let activeTab = "assign";
-let cart = []; // { unitType, packageLabel, durationMin, price }
-let cartPayment = "UPI";
-let cartCustomerName = "", cartCustomerPhone = "";
-let _lastLocalId = 0;
-let checkoutInFlight = false;
+// ---------------------------------------------------------------------------
+// Self-service branding -- same pattern as the main relaxrechargego.com site's
+// Locations system: nothing here is hardcoded. Add/swap a mall by editing
+// /malls.json (one entry: {id, name}) and dropping image files named
+// <id>-mall-logo.<ext> into /assets/ -- no code changes, no redeploy of logic.
+// Our own logo reuses the SAME file the main site already uses (/assets/rrg-logo.<ext>),
+// so updating it once updates it everywhere.
+// ---------------------------------------------------------------------------
+const IMG_EXTS = ["png", "jpg", "jpeg", "webp"];
+let mallsList = [];       // loaded from /malls.json
+let selectedMallId = null; // which mall's branding is currently shown
+
+function tryLoadImage(imgEl, basePath, extIndex){
+  extIndex = extIndex || 0;
+  if (extIndex >= IMG_EXTS.length) { imgEl.style.display = "none"; return; }
+  imgEl.onerror = () => tryLoadImage(imgEl, basePath, extIndex + 1);
+  imgEl.onload = () => {
+    imgEl.style.display = "inline-block";
+    // Record which extension actually loaded, so anything reusing this image later (e.g. adding
+    // it to a PDF) knows its real format instead of assuming PNG -- passing the wrong format to
+    // jsPDF's addImage decodes the bytes incorrectly and corrupts the image visually.
+    imgEl.dataset.imgFormat = IMG_EXTS[extIndex] === "jpg" ? "JPEG" : IMG_EXTS[extIndex].toUpperCase();
+  };
+  imgEl.src = basePath + "." + IMG_EXTS[extIndex];
+}
+
+async function loadMallsList(){
+  try {
+    const res = await fetch("/malls.json", { cache: "no-cache" });
+    if (!res.ok) throw new Error("no malls.json");
+    mallsList = await res.json();
+  } catch (e) {
+    mallsList = []; // fine -- branding just falls back to generic labels below
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Self-service visibility settings -- same file-in-repo pattern as malls.json. Edit
+// /mall-admin-visibility.json directly on GitHub (true/false per section) to show or hide a
+// tab or panel for Mall Admin -- no code change needed. Missing keys default to visible (true),
+// so an incomplete or missing config file never silently hides something unintended.
+// ---------------------------------------------------------------------------
+let visibilityConfig = {};
+async function loadVisibilityConfig(){
+  try {
+    const res = await fetch("/mall-admin-visibility.json", { cache: "no-cache" });
+    if (!res.ok) throw new Error("no visibility config");
+    visibilityConfig = await res.json();
+  } catch (e) {
+    visibilityConfig = {}; // fine -- isVisible() defaults everything to true below
+  }
+}
+// Reads a dotted path like "operations.paymentMethodBreakdown" out of visibilityConfig.
+// Anything not explicitly set to false is treated as visible.
+function isVisible(path){
+  const parts = path.split(".");
+  let node = visibilityConfig;
+  for (const p of parts) {
+    if (node == null || typeof node !== "object") return true;
+    node = node[p];
+  }
+  return node !== false;
+}
+
+function currentMall(){
+  if (!mallsList.length) return null;
+  return mallsList.find(m => m.id === selectedMallId) || mallsList[0];
+}
+
+function renderBranding(){
+  const rrgLogoImg = document.getElementById("rrgLogoImg");
+  if (rrgLogoImg) tryLoadImage(rrgLogoImg, "/assets/rrg-logo");
+
+  const mall = currentMall();
+  const mallLogoImg = document.getElementById("mallLogoImg");
+  const mallNameEl = document.getElementById("mallNameLabel");
+  if (mall) {
+    if (mallLogoImg) tryLoadImage(mallLogoImg, "/assets/" + mall.id + "-mall-logo");
+    if (mallNameEl) mallNameEl.textContent = mall.name;
+  } else {
+    if (mallLogoImg) mallLogoImg.style.display = "none";
+    if (mallNameEl) mallNameEl.textContent = "RRG Lounge";
+  }
+
+  // Picker only ever appears once more than one mall is actually configured in
+  // malls.json. NOTE: this currently only switches which mall's NAME/LOGO is shown --
+  // real per-mall data separation is a separate backend project, not yet built.
+  const pickerWrap = document.getElementById("mallPickerWrap");
+  if (pickerWrap) pickerWrap.style.display = mallsList.length > 1 ? "block" : "none";
+}
+
+function currentStaffName(){
+  const email = fbAuth.currentUser && fbAuth.currentUser.email;
+  const staffId = email ? email.split("@")[0] : "";
+  const rec = (liveConfig.staff || []).find(s => s.staffId === staffId);
+  return (rec && rec.name) ? rec.name : staffId;
+}
+
+// Generic "show it's working" wrapper for any button whose click kicks off something that isn't
+// instant (PDF/Excel generation, opening a print window) -- disables the button and swaps its
+// label to "Processing..." for the duration, restores it after, even if the work throws.
+async function withBusyButton(btn, fn){
+  if (!btn) { await fn(); return; }
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Processing\u2026";
+  // The heavy work below (jsPDF/SheetJS) runs synchronously and blocks the main thread --
+  // without this, the browser batches the label change together with that work and never
+  // actually paints "Processing..." until it's already done. Waiting two animation frames
+  // guarantees a real paint happens first.
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  try {
+    await fn();
+  } catch (e) {
+    alert("Something went wrong: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+// Highlights whichever quick-range button (Today/Yesterday/This Month, Last 1 Month, etc.) was
+// just clicked, clearing the highlight from its siblings -- so it's visible which range is
+// currently selected, the same way the top tabs show which tab is active.
+function markActiveQuickRange(clickedBtn){
+  if (!clickedBtn || !clickedBtn.parentElement) return;
+  clickedBtn.parentElement.querySelectorAll(".qr-btn").forEach(b => b.classList.remove("qr-active"));
+  clickedBtn.classList.add("qr-active");
+}
 
 function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
-function unitTypeOf(name){
-  if (liveConfig.unitTypes && liveConfig.unitTypes[name]) return liveConfig.unitTypes[name];
-  return name.startsWith("Leg") ? "Leg" : "Chair";
+function fmtMoney(n){ return "\u20B9" + Math.round(n||0).toLocaleString("en-IN"); }
+function todayStr(){ const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
+function fmtMMSS(totalSec){ const s = Math.max(0, totalSec); const m = Math.floor(s/60); const r = s%60; return String(m).padStart(2,"0") + ":" + String(r).padStart(2,"0"); }
+function unitTypeOf(name){ if (liveConfig.unitTypes && liveConfig.unitTypes[name]) return liveConfig.unitTypes[name]; return name.startsWith("Leg") ? "Leg" : "Chair"; }
+function activeChairOrder(){ const disabled = liveConfig.disabledUnits || []; return (liveConfig.chairOrder || []).filter(c => !disabled.includes(c)); }
+
+function sessionEffectiveEndTs(s){
+  const base = s.startTs + s.durationMin * 60000 + (s.pausedTotalMs || 0);
+  return s.pauseStartedAt ? (base + (Date.now() - s.pauseStartedAt)) : base;
 }
-function freeMatchingChairs(unitType){
-  const disabled = liveConfig.disabledUnits || [];
-  const busy = new Set(sessionRows.map(s => s.chairName));
-  return (liveConfig.chairOrder || []).filter(c => !disabled.includes(c) && unitTypeOf(c) === unitType && !busy.has(c));
+function getRunningSession(chairName){
+  const rows = sessionsToday.filter(s => s.chairName === chairName && s.status === "running");
+  if (!rows.length) return null;
+  return rows.reduce((latest, s) => sessionEffectiveEndTs(s) > sessionEffectiveEndTs(latest) ? s : latest);
+}
+function chairAwaitingAcknowledgment(chairName){
+  return sessionsToday.some(s => s.chairName === chairName && s.needsAcknowledgment);
+}
+function latestUnacknowledgedForChair(chairName){
+  const rows = sessionsToday.filter(s => s.chairName === chairName && s.needsAcknowledgment);
+  if (!rows.length) return null;
+  return rows.reduce((a,b) => (a.endTs > b.endTs ? a : b));
+}
+function isChairInCart(){ return false; } // this page has no cart/checkout at all -- never true here
+function adjustmentFor(invoiceNo){ return adjustmentsToday.find(a => a.invoiceNo === invoiceNo) || null; }
+function paymentSplitFor(invoiceNo){ return paymentSplitsToday.find(p => p.invoiceNo === invoiceNo) || null; }
+function collectedAmount(s){
+  if (s.status === "cancelled") return (s.refunded || s.paymentStatus === "pending") ? 0 : s.amount;
+  return s.paymentStatus === "paid" ? s.amount : 0;
+}
+function effectiveRevenue(s){
+  if (s.status === "cancelled") return (s.refunded || s.paymentStatus === "pending") ? 0 : s.amount;
+  return s.amount;
+}
+function adjustmentsTotalForSessions(sessions){
+  const seen = new Set(); let total = 0;
+  sessions.forEach(s => {
+    if (s.invoiceNo && !seen.has(s.invoiceNo)) {
+      seen.add(s.invoiceNo);
+      const adj = adjustmentFor(s.invoiceNo);
+      if (adj) total += adj.amount;
+    }
+  });
+  return total;
+}
+// Normalizes any payment-method string (from a session, a split row, or an adjustment) to one
+// of the three canonical buckets -- defends against a stray case/whitespace difference (e.g.
+// "cash" vs "Cash") silently creating an invisible extra bucket that never shows on screen.
+// Anything that genuinely isn't Cash/UPI/Card falls into "Other", which the table below DOES
+// render if it's ever non-zero, rather than swallowing the amount without a trace.
+function normalizePaymentMethod(m){
+  const t = String(m || "").trim();
+  const lower = t.toLowerCase();
+  if (lower === "cash") return "Cash";
+  if (lower === "upi") return "UPI";
+  if (lower === "card") return "Card";
+  return t || "Other";
+}
+function paymentMethodTotals(){
+  const totals = { Cash: { amount: 0, count: 0 }, UPI: { amount: 0, count: 0 }, Card: { amount: 0, count: 0 } };
+
+  // Group sessions by invoice first -- a single checkout can cover multiple chairs/items under
+  // one invoiceNo, and every one of those line items has to be summed together before bucketing
+  // by payment method. Treating each session row on its own (the earlier approach here) silently
+  // dropped every line item after the first on any multi-item bill.
+  const invoiceMap = {};
+  const standalone = [];
+  for (const s of sessionsToday) {
+    if (s.invoiceNo) {
+      if (!invoiceMap[s.invoiceNo]) invoiceMap[s.invoiceNo] = { method: s.method, sessions: [] };
+      invoiceMap[s.invoiceNo].sessions.push(s);
+    } else {
+      standalone.push(s);
+    }
+  }
+  const addTo = (methodRaw, amount, addCount) => {
+    const key = normalizePaymentMethod(methodRaw);
+    if (!totals[key]) totals[key] = { amount: 0, count: 0 };
+    totals[key].amount += amount;
+    if (addCount) totals[key].count += 1;
+  };
+
+  Object.keys(invoiceMap).forEach(invoiceNo => {
+    const { method, sessions } = invoiceMap[invoiceNo];
+    const collected = sessions.reduce((a, s) => a + collectedAmount(s), 0);
+    // An adjustment corrects THIS invoice's own bill -- fold it into the same method bucket the
+    // sale itself falls into, matching how the Receipts tab (and the real dashboard) attribute it.
+    const adj = adjustmentFor(invoiceNo);
+    const adjAmt = adj ? adj.amount : 0;
+    if (collected <= 0 && adjAmt === 0) return;
+
+    if (normalizePaymentMethod(method) === "Split") {
+      const split = paymentSplitFor(invoiceNo);
+      if (split) {
+        split.splits.forEach(row => addTo(row.method, row.amount, true));
+        // Best-effort: an adjustment on a split-paid invoice goes into the split's first
+        // component bucket -- there's no single "right" bucket for a correction on a bill that
+        // was itself paid across multiple methods.
+        if (adjAmt && split.splits.length) addTo(split.splits[0].method, adjAmt, false);
+      }
+      return;
+    }
+    addTo(method, collected + adjAmt, true); // one count per INVOICE, not per line item
+  });
+
+  standalone.forEach(s => {
+    const collected = collectedAmount(s);
+    if (collected <= 0) return;
+    addTo(s.method, collected, true);
+  });
+
+  return totals;
 }
 
 function buildLogin(errorMsg){
+  unsubs.forEach(u => u()); unsubs = [];
   document.getElementById("root").innerHTML = `
     <div class="login-wrap">
       <div class="login-card">
         <div class="login-brand">RRG Lounge</div>
-        <div class="login-sub">Staff Queue View</div>
+        <div class="login-sub">Staff & Mall Admin Login</div>
         <div class="field"><label>Staff ID</label><input id="loginId" autocapitalize="off"></div>
         <div class="field"><label>PIN</label><input id="loginPin" type="password" inputmode="numeric"></div>
         <button class="btn" id="loginBtn">Login</button>
@@ -126,6 +387,8 @@ function buildLogin(errorMsg){
   document.getElementById("loginPin").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 }
 
+let currentUserRole = null;
+
 async function doLogin(){
   const staffId = document.getElementById("loginId").value.trim();
   const pin = document.getElementById("loginPin").value;
@@ -133,14 +396,12 @@ async function doLogin(){
   const btn = document.getElementById("loginBtn");
   btn.disabled = true;
   try {
-    const email = `${staffId}@rrglounge.local`;
-    const cred = await fbAuth.signInWithEmailAndPassword(email, pin);
+    const cred = await fbAuth.signInWithEmailAndPassword(`${staffId}@rrglounge.local`, pin);
     const token = await cred.user.getIdTokenResult(true);
-    if (token.claims.active !== true) { await fbAuth.signOut(); buildLogin("This account has been disabled. Please see Admin."); return; }
+    if (token.claims.active !== true) { await fbAuth.signOut(); buildLogin("This account has been disabled."); return; }
     if (!token.claims.role) { await fbAuth.signOut(); buildLogin("Account isn't fully set up yet. Please see Admin."); return; }
-    if (token.claims.role === "mall_admin") { await fbAuth.signOut(); buildLogin("This page is for staff use only. Please use the Mall Admin Portal instead."); return; }
-    currentUser = { uid: cred.user.uid, role: token.claims.role, staffId };
-    buildApp();
+    currentUserRole = token.claims.role;
+    await buildApp();
   } catch (e) {
     let msg = "Couldn't sign in. Please try again.";
     if (e.code === "auth/wrong-password" || e.code === "auth/invalid-credential" || e.code === "auth/invalid-login-credentials") msg = "Incorrect PIN.";
@@ -150,171 +411,1118 @@ async function doLogin(){
   }
 }
 
-function buildApp(){
+async function buildApp(){
+  if (!mallsList.length) await loadMallsList();
+  await loadVisibilityConfig();
+
+  // Which tabs exist at all depends on WHO logged in -- mall_admin gets the read-only reporting
+  // suite (further narrowed by mall-admin-visibility.json below); staff gets just the queue tool
+  // they need at the chair; anyone else (you, or any other internal role) gets the queue tool
+  // plus Operations/Receipts, so either the desk or a phone can be the one assigning chairs.
+  let allTabs;
+  if (currentUserRole === "mall_admin") {
+    allTabs = [
+      { id: "operations", label: "Operations" },
+      { id: "receipts", label: "Receipts" },
+      { id: "mdshare", label: "Mall Share" },
+      { id: "analytics", label: "Analytics" }
+    ];
+  } else if (currentUserRole === "staff") {
+    allTabs = [ { id: "queue", label: "Queue" } ];
+  } else {
+    allTabs = [
+      { id: "queue", label: "Queue" },
+      { id: "operations", label: "Operations" },
+      { id: "receipts", label: "Receipts" }
+    ];
+  }
+  // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
+  // control what Mall Admin sees; it was never meant to also gate your own or staff's tools.
+  const visibleTabs = currentUserRole === "mall_admin" ? allTabs.filter(t => isVisible(t.id + ".enabled")) : allTabs;
+  if (!visibleTabs.some(t => t.id === currentTab)) currentTab = (visibleTabs[0] || allTabs[0]).id;
+  const tabsHtml = visibleTabs.map(t => `<div class="tab${t.id === currentTab ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("");
+
   document.getElementById("root").innerHTML = `
     <div class="topbar">
-      <div><b>RRG Lounge</b> &middot; Queue View</div>
-      <button id="logoutBtn">Logout</button>
+      <div class="topbar-left">
+        <img id="rrgLogoImg" class="brand-logo" alt="RRG Lounge">
+        <div class="topbar-titles">
+          <div class="mall-name" id="mallNameLabel">RRG Lounge</div>
+          <div class="portal-label">${currentUserRole === "mall_admin" ? "Mall Admin Portal" : (currentUserRole === "staff" ? "Staff Access" : "Staff & Admin Access")}</div>
+          <div id="mallPickerWrap" style="display:none;">
+            <select class="mall-picker" id="mallPickerSelect"></select>
+          </div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <img id="mallLogoImg" class="brand-logo" alt="">
+        <div class="topbar-user">
+          <div class="user-name" id="userNameLabel">\u2014</div>
+          <button id="logoutBtn">Logout</button>
+        </div>
+      </div>
     </div>
-    <div class="tabbar" id="tabBar"></div>
-    <div class="content" id="assignContent">
-      <div class="section-title">Waiting Queue</div>
-      <div id="queueList"></div>
-      <div class="section-title">Chair Status</div>
-      <div id="chairList"></div>
-    </div>
-    <div class="content" id="bookContent" style="display:none;"></div>`;
+    <div class="tabs">${tabsHtml}</div>
+    <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
+
+  document.querySelectorAll(".tab").forEach(tabEl => {
+    tabEl.addEventListener("click", () => {
+      currentTab = tabEl.dataset.tab;
+      document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tabEl));
+      render();
+    });
+  });
+
+  if (mallsList.length) {
+    selectedMallId = selectedMallId || mallsList[0].id;
+    const sel = document.getElementById("mallPickerSelect");
+    sel.innerHTML = mallsList.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
+    sel.value = selectedMallId;
+    sel.addEventListener("change", (e) => { selectedMallId = e.target.value; renderBranding(); });
+  }
+  renderBranding();
+  document.getElementById("userNameLabel").textContent = currentStaffName();
+
   document.getElementById("logoutBtn").addEventListener("click", async () => {
-    if (unsubQueue) unsubQueue();
-    if (unsubSessions) unsubSessions();
-    if (unsubConfig) unsubConfig();
-    currentUser = null;
+    unsubs.forEach(u => u()); unsubs = [];
     await fbAuth.signOut();
     buildLogin();
   });
 
-  unsubConfig = fsDb.collection("meta").doc("config").onSnapshot(doc => {
-    const data = doc.data() || {};
-    const config = data.value || {}; // stored as {key:"config", value:{...actual settings...}}, not flat
-    liveConfig = {
-      chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {},
-      packages: config.packages || {}, paymentMethods: config.paymentMethods || [],
-      defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG",
-      gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, gstin: config.gstin || "",
-      mobileBookingEnabled: !!config.mobileBookingEnabled
+  const today = todayStr();
+  const invoicePrefixQuery = (collectionName) => fsDb.collection(collectionName)
+    .where("invoiceNo", ">=", "RRG-FY").where("invoiceNo", "<", "RRG-FZ"); // narrows to this year's invoices; filtered further client-side by date below
+
+  unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
+    const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "" };
+    const nameEl = document.getElementById("userNameLabel");
+    if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
+    requestRender();
+  }));
+  unsubs.push(fsDb.collection("sessions").where("date", "==", today).onSnapshot(snap => {
+    sessionsToday = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+    requestRender();
+  }));
+  // paymentSplits/invoiceAdjustments aren't dated directly -- keyed by invoiceNo, which embeds
+  // the date (e.g. RRG-FY26-09-01-004), so today's slice is found by prefix match instead of a
+  // full-collection read.
+  const invPrefix = `RRG-FY${today.slice(2,4)}-${today.slice(5,7)}-${today.slice(8,10)}`;
+  unsubs.push(fsDb.collection("paymentSplits").where("invoiceNo", ">=", invPrefix).where("invoiceNo", "<", invPrefix + "\uf8ff").onSnapshot(snap => {
+    paymentSplitsToday = snap.docs.map(d => d.data());
+    requestRender();
+  }));
+  unsubs.push(fsDb.collection("invoiceAdjustments").where("invoiceNo", ">=", invPrefix).where("invoiceNo", "<", invPrefix + "\uf8ff").onSnapshot(snap => {
+    adjustmentsToday = snap.docs.map(d => d.data());
+    requestRender();
+  }));
+
+  // Queue tab (staff, and anyone else who isn't mall_admin) needs the live waiting queue too.
+  // Chair busy/free status is derived from sessionsToday above -- no separate listener needed.
+  if (currentUserRole !== "mall_admin") {
+    unsubs.push(fsDb.collection("waitingQueue").onSnapshot(snap => {
+      queueRows = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+      lastQueueSyncTs = Date.now();
+      queueListenerError = null;
+      requestRender();
+    }, err => {
+      lastQueueSyncTs = null; // makes staleness visible instead of silently trusting old data
+      console.warn("Queue listener error:", err.message);
+      if (currentTab === "queue") { queueListenerError = err.message; requestRender(); }
+    }));
+    // A stalled connection would otherwise leave the "Synced Xs ago" label frozen at whatever it
+    // said when things stopped updating -- ticking it forward independently of Firestore activity
+    // is what actually makes staleness visible rather than silently trusting old data on screen.
+    unsubs.push(() => clearInterval(queueStaleTicker));
+    queueStaleTicker = setInterval(() => { if (currentTab === "queue") render(); }, 5000);
+  }
+}
+
+// On a busy day, several Firestore updates can land within the same second (a chair status
+// change, someone else marking a token called, etc.) -- each one calling render() separately
+// means several full panel rebuilds back-to-back, which is exactly what a "lag"/flicker feeling
+// on a real phone comes from. Coalescing them into one render a beat later fixes that without
+// changing what gets shown -- direct user actions (switching tabs) still render immediately.
+let renderDebounceTimer = null;
+function requestRender(){
+  if (renderDebounceTimer) return;
+  renderDebounceTimer = setTimeout(() => { renderDebounceTimer = null; render(); }, 120);
+}
+
+function render(){  if (currentTab === "receipts") { renderReceiptsTab(); return; }
+  if (currentTab === "mdshare") { renderMallShareTab(); return; }
+  if (currentTab === "analytics") { renderAnalyticsTab(); return; }
+  if (currentTab === "queue") {
+    if (queueInteractionActive) { queueRerenderPending = true; return; }
+    renderQueueTab();
+    return;
+  }
+  renderOperationsTab();
+}
+
+function renderOperationsTab(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  el.classList.add("op-grid");
+  const today = todayStr();
+
+  const rows = activeChairOrder().map(chairName => {
+    const running = getRunningSession(chairName);
+    if (running) {
+      const remainSec = Math.max(0, Math.round((sessionEffectiveEndTs(running) - Date.now())/1000));
+      const paused = !!running.pauseStartedAt;
+      return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-red"></span>Running${paused ? " (Paused)" : ""}</td><td>${running.durationMin}m</td><td>${fmtMMSS(remainSec)}</td></tr>`;
+    }
+    if (chairAwaitingAcknowledgment(chairName)) {
+      const s = latestUnacknowledgedForChair(chairName);
+      const overdueSec = Math.max(0, Math.round((Date.now() - s.endTs) / 1000));
+      return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-red"></span>\u23f0 Time's Up (${fmtMMSS(overdueSec)} ago)</td><td>${s.durationMin}m</td><td>-</td></tr>`;
+    }
+    return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-green"></span>Available</td><td>-</td><td>-</td></tr>`;
+  }).join("");
+
+  const completed = sessionsToday.filter(s => s.status === "completed").length;
+  const runningCount = sessionsToday.filter(s => s.status === "running").length;
+  const revenue = sessionsToday.reduce((a,s) => a + effectiveRevenue(s), 0) + adjustmentsTotalForSessions(sessionsToday);
+  const methodTotals = paymentMethodTotals();
+  // Render every bucket that actually exists (Cash/UPI/Card always shown even at zero; anything
+  // unexpected -- e.g. a mismatched method string on an adjustment -- shows as its own row instead
+  // of silently vanishing). Total is summed across ALL buckets, so it can never drift from Revenue.
+  const knownOrder = ["Cash", "UPI", "Card"];
+  const extraKeys = Object.keys(methodTotals).filter(k => !knownOrder.includes(k)).sort();
+  const methodRowOrder = knownOrder.concat(extraKeys);
+  const methodRows = methodRowOrder.map(k => `<tr><td>${escapeHtml(k)}</td><td>${methodTotals[k].count}</td><td>${fmtMoney(methodTotals[k].amount)}</td></tr>`).join("");
+  const grandCount = methodRowOrder.reduce((a,k) => a + methodTotals[k].count, 0);
+  const grandAmount = methodRowOrder.reduce((a,k) => a + methodTotals[k].amount, 0);
+
+  const paymentPanelHtml = isVisible("operations.paymentMethodBreakdown") ? `
+    <div class="panel">
+      <div class="panel-title">Payment Method Breakdown \u2014 Today</div>
+      <table>
+        <thead><tr><th>Method</th><th>Transactions</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${methodRows}
+          <tr><td><b>Total Collected</b></td><td><b>${grandCount}</b></td><td><b>${fmtMoney(grandAmount)}</b></td></tr>
+        </tbody>
+      </table>
+    </div>` : "";
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Live Chair Status</div>
+      <p class="panel-help">View-only.</p>
+      <table><thead><tr><th>Unit</th><th>Status</th><th>Package</th><th>Remaining</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Today's Summary</div>
+      <table>
+        <tr><td>Customers Today</td><td>${sessionsToday.length}</td></tr>
+        <tr><td>Running Sessions</td><td>${runningCount}</td></tr>
+        <tr><td>Completed Sessions</td><td>${completed}</td></tr>
+        <tr><td><b>Today's Revenue</b></td><td><b>${fmtMoney(revenue)}</b></td></tr>
+      </table>
+    </div>
+    ${paymentPanelHtml}
+  `;
+}
+
+/* ========================= RECEIPTS TAB (view/Print/PDF only) =========================
+   Mirrors the exact read-only behaviour already proven for role "mall_admin" in the main
+   Lounge OS dashboard: no edit fields, no Adjust/Save-method buttons -- just look up a past
+   bill, print it, or save it as a PDF. Same underlying figures (adjustments, splits) as the
+   real dashboard so nothing here can show a different number than what staff actually see. */
+
+function tokenTypeLabel(unitType){
+  if (unitType === "Leg") return "Foot";
+  if (unitType === "Advanced Leg") return "Adv. Foot";
+  return "Body";
+}
+function massagerNameFor(unitType){ return tokenTypeLabel(unitType) + " Massager"; }
+function cartItemName(chairName, packageLabel, unitTypeFallback){
+  const type = chairName != null ? unitTypeOf(chairName) : (unitTypeFallback || "Chair");
+  return massagerNameFor(type) + "-" + packageLabel;
+}
+function tokenItemDisplayName(item){
+  if (item.chairName != null) return cartItemName(item.chairName, item.packageLabel);
+  return massagerNameFor(item.unitType) + "-" + item.packageLabel;
+}
+function groupCartItemsClean(items){
+  const map = {}; const order = [];
+  items.forEach(it => {
+    const name = tokenItemDisplayName(it);
+    const key = name + "|" + it.price;
+    if (!map[key]) { map[key] = { name, rate: it.price, qty: 0, subtotal: 0 }; order.push(key); }
+    map[key].qty += 1;
+    map[key].subtotal += it.price;
+  });
+  return order.map(k => map[k]);
+}
+function splitMethodLabel(split){
+  if (!split) return "Split";
+  return split.splits.filter(s => s.amount > 0).map(s => `${s.method} ${fmtMoney(s.amount)}`).join(" + ");
+}
+function dmy(d = new Date()){
+  const pad2 = n => String(n).padStart(2,"0");
+  return pad2(d.getDate()) + "/" + pad2(d.getMonth()+1) + "/" + d.getFullYear();
+}
+function timeStr(d = new Date()){
+  const pad2 = n => String(n).padStart(2,"0");
+  return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+}
+function fmtMoneyPDF(n){ return "Rs." + Math.round(n||0).toLocaleString("en-IN"); }
+function pdfSafeText(v){
+  if (v === null || v === undefined) return v;
+  if (typeof v !== "string") return v;
+  return v
+    .replace(/\u2192/g, "->").replace(/\u2190/g, "<-")
+    .replace(/[\u2013\u2014]/g, "-").replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"').replace(/\u2026/g, "...")
+    .replace(/[^\x00-\x7F]/g, "");
+}
+function gstBreakup(amount, rate){
+  const taxable = amount / (1 + rate/100);
+  const totalTax = amount - taxable;
+  return { taxable, cgst: totalTax/2, sgst: totalTax/2 };
+}
+
+// ---- Receipts data (loaded on demand, NOT a permanent listener -- avoids an ever-growing
+// full-history read cost; only the currently selected filter's range is ever fetched) ----
+let receiptsSessions = [], receiptsSplits = [], receiptsAdjustments = [], receiptsTxnRefs = [];
+let receiptsLoadedRange = null; // {from, to} of what's currently loaded, so we don't re-fetch needlessly
+let receiptsFilterFrom = null, receiptsFilterTo = null, receiptsSearchInvoice = "";
+let receiptsFilterYear = "", receiptsFilterMonth = "", receiptsFilterPaymentType = "";
+
+function invNoPrefix(dateStr){ return `RRG-FY${dateStr.slice(2,4)}-${dateStr.slice(5,7)}-${dateStr.slice(8,10)}`; }
+
+// Invoice numbers embed the date (RRG-FYyy-mm-dd-seq) and sort lexicographically WITHIN a
+// calendar year -- this range fetch is reliable for any range inside one calendar year (the
+// common case: Today, a month, a custom recent range). A range crossing a Dec->Jan boundary
+// can miss rows because "mm" resets past "dd" ordering -- flagged here rather than silently
+// risking a wrong/incomplete receipts list; ask before relying on this for a Dec-Jan range.
+async function loadReceiptsRange(from, to){
+  const fromPrefix = invNoPrefix(from), toPrefix = invNoPrefix(to);
+  const [sessSnap, splitSnap, adjSnap, refSnap] = await Promise.all([
+    fsDb.collection("sessions").where("date", ">=", from).where("date", "<=", to).get(),
+    fsDb.collection("paymentSplits").where("invoiceNo", ">=", fromPrefix).where("invoiceNo", "<", toPrefix + "\uf8ff").get(),
+    fsDb.collection("invoiceAdjustments").where("invoiceNo", ">=", fromPrefix).where("invoiceNo", "<", toPrefix + "\uf8ff").get(),
+    fsDb.collection("txnRefs").where("invoiceNo", ">=", fromPrefix).where("invoiceNo", "<", toPrefix + "\uf8ff").get()
+  ]);
+  receiptsSessions = sessSnap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+  receiptsSplits = splitSnap.docs.map(d => d.data());
+  receiptsAdjustments = adjSnap.docs.map(d => d.data());
+  receiptsTxnRefs = refSnap.docs.map(d => d.data());
+  receiptsLoadedRange = { from, to };
+}
+
+function receiptAdjustmentFor(invoiceNo){ return receiptsAdjustments.find(a => a.invoiceNo === invoiceNo) || null; }
+function receiptSplitFor(invoiceNo){ return receiptsSplits.find(p => p.invoiceNo === invoiceNo) || null; }
+function receiptTxnRefFor(invoiceNo){ const r = receiptsTxnRefs.find(x => x.invoiceNo === invoiceNo); return r ? r.ref : ""; }
+
+function sessionItemLabel(s){
+  const base = `${cartItemName(s.chairName, s.packageLabel, s.unitType)} (${s.chairName || "unassigned"})`;
+  if (s.status === "cancelled") return `${base} [${s.refunded ? "Cancelled-Refunded" : "Cancelled-Kept"}]`;
+  return base;
+}
+function invoicesFromSessions(){
+  const map = {}; const order = [];
+  for (const s of receiptsSessions) {
+    if (!s.invoiceNo) continue;
+    if (!map[s.invoiceNo]) {
+      const checkoutTs = new Date(s.date + "T" + s.time).getTime() || Date.now();
+      map[s.invoiceNo] = { invoiceNo: s.invoiceNo, date: s.date, time: s.time, startTs: checkoutTs, staff: s.staff, method: s.method, gst: s.gst, customerName: s.customerName || null, sessions: [] };
+      order.push(s.invoiceNo);
+    }
+    map[s.invoiceNo].sessions.push(s);
+  }
+  return order.map(k => map[k]).sort((a,b) => b.startTs - a.startTs);
+}
+function invoiceToSaleObject(inv){
+  const activeSessions = inv.sessions.filter(s => s.status !== "cancelled");
+  const cancelledSessions = inv.sessions.filter(s => s.status === "cancelled");
+  const priced = activeSessions.map(s => ({ chairName: s.chairName, packageLabel: s.packageLabel, price: s.amount, unitType: s.unitType }));
+  const items = groupCartItemsClean(priced);
+  cancelledSessions.forEach(s => {
+    const tag = s.refunded ? "Cancelled - Refunded" : "Cancelled - Kept";
+    items.push({ name: `${tokenItemDisplayName(s)} (${tag})`, rate: s.refunded ? 0 : s.amount, qty: 1, subtotal: s.refunded ? 0 : s.amount });
+  });
+  const baseTotal = inv.sessions.reduce((a,s) => a + effectiveRevenue(s), 0);
+  const adj = receiptAdjustmentFor(inv.invoiceNo);
+  if (adj) items.push({ name: adj.label, rate: adj.amount, qty: 1, subtotal: adj.amount });
+  const total = baseTotal + (adj ? adj.amount : 0);
+  const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+  return { invoiceNo: inv.invoiceNo, date: inv.date, time: inv.time, startTs: inv.startTs, staff: inv.staff, method: inv.method, methodDisplay: split ? splitMethodLabel(split) : inv.method, gst: inv.gst, items, total, customerName: inv.customerName || null };
+}
+function currentFilteredInvoices(){
+  return invoicesFromSessions().filter(inv => {
+    if (receiptsFilterYear !== "" || receiptsFilterMonth !== "") {
+      if (receiptsFilterYear !== "" && inv.date.slice(0,4) !== String(receiptsFilterYear)) return false;
+      if (receiptsFilterMonth !== "" && (parseInt(inv.date.slice(5,7),10) - 1) !== parseInt(receiptsFilterMonth,10)) return false;
+    } else {
+      if (inv.date < receiptsFilterFrom || inv.date > receiptsFilterTo) return false;
+    }
+    if (receiptsSearchInvoice) {
+      const q = receiptsSearchInvoice.toLowerCase();
+      const matchesInvoice = inv.invoiceNo.toLowerCase().includes(q);
+      const matchesCustomer = inv.customerName && inv.customerName.toLowerCase().includes(q);
+      const matchesTxnRef = receiptTxnRefFor(inv.invoiceNo).toLowerCase().includes(q);
+      if (!matchesInvoice && !matchesCustomer && !matchesTxnRef) return false;
+    }
+    if (receiptsFilterPaymentType && inv.method !== receiptsFilterPaymentType) return false;
+    return true;
+  });
+}
+function receiptsFilterLabel(){
+  const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const parts = [];
+  if (receiptsFilterMonth !== "") parts.push(MONTH_ABBR[parseInt(receiptsFilterMonth,10)]);
+  if (receiptsFilterYear !== "") parts.push(receiptsFilterYear);
+  if (parts.length) return parts.join("_");
+  return `${receiptsFilterFrom}_to_${receiptsFilterTo}`;
+}
+
+// Simple, correct, desktop-friendly receipt (A4) rather than an exact 80mm thermal-roll replica --
+// same figures as the shop's own thermal bill, just laid out for a screen/printer here.
+function printReceiptSimple(sale){
+  const w = window.open("", "_blank", "width=480,height=700");
+  if (!w) { alert("Please allow pop-ups to print."); return; }
+  const gst = sale.gst || { enabled:false, rate:18, gstin:"" };
+  const gstRows = gst.enabled ? (() => { const b = gstBreakup(sale.total, gst.rate); return `
+    <tr><td>Taxable Value</td><td style="text-align:right;">${fmtMoney(b.taxable)}</td></tr>
+    <tr><td>CGST @ ${(gst.rate/2).toFixed(1)}%</td><td style="text-align:right;">${fmtMoney(b.cgst)}</td></tr>
+    <tr><td>SGST @ ${(gst.rate/2).toFixed(1)}%</td><td style="text-align:right;">${fmtMoney(b.sgst)}</td></tr>
+    ${gst.gstin ? `<tr><td>GSTIN</td><td style="text-align:right;">${escapeHtml(gst.gstin)}</td></tr>` : ""}`; })() : "";
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(sale.invoiceNo||"Receipt")}</title>
+    <style>body{font-family:monospace;padding:16px;color:#000;} table{width:100%;border-collapse:collapse;font-size:13px;} td{padding:3px 0;} .line{border-top:1px dashed #000;margin:6px 0;} .total{font-weight:700;font-size:15px;} .center{text-align:center;}</style>
+    </head><body>
+    <div class="center" style="font-weight:700;font-size:16px;">${escapeHtml(liveConfig.businessName || "RRG Lounge")}</div>
+    <div class="line"></div>
+    <table>
+      <tr><td>Invoice No</td><td style="text-align:right;">${escapeHtml(sale.invoiceNo||"-")}</td></tr>
+      <tr><td>Date</td><td style="text-align:right;">${dmy(new Date(sale.startTs))} ${sale.time}</td></tr>
+      <tr><td>Staff</td><td style="text-align:right;">${escapeHtml(sale.staff||"")}</td></tr>
+      ${sale.customerName ? `<tr><td>Customer</td><td style="text-align:right;">${escapeHtml(sale.customerName)}</td></tr>` : ""}
+    </table>
+    <div class="line"></div>
+    <table>${sale.items.map(it => `<tr><td>${escapeHtml(it.name)} x${it.qty}</td><td style="text-align:right;">${fmtMoney(it.subtotal)}</td></tr>`).join("")}</table>
+    <div class="line"></div>
+    <table>${gstRows}
+      <tr class="total"><td>TOTAL</td><td style="text-align:right;">${fmtMoney(sale.total)}</td></tr>
+      <tr><td>Payment</td><td style="text-align:right;">${escapeHtml(sale.methodDisplay || sale.method)}</td></tr>
+    </table>
+    <div class="line"></div>
+    <div class="center">Thank you! Visit again.</div>
+    </body></html>`);
+  w.document.close();
+  w.onload = () => { w.focus(); w.print(); };
+}
+
+function exportReceiptPDFSimple(sale){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a5" });
+  const rightX = 138; let y = 14;
+  doc.setFont("courier","bold"); doc.setFontSize(13);
+  doc.text(pdfSafeText(liveConfig.businessName || "RRG Lounge"), 74, y, { align: "center" }); y += 8;
+  doc.setLineWidth(0.2); doc.line(10, y, rightX, y); y += 6;
+  doc.setFont("courier","normal"); doc.setFontSize(10);
+  [["Invoice No", sale.invoiceNo||"-"], ["Date", dmy(new Date(sale.startTs)) + " " + sale.time], ["Staff", sale.staff||""], ["Customer", sale.customerName||""]].forEach(r => {
+    doc.text(r[0], 10, y); doc.text(pdfSafeText(String(r[1])), rightX, y, { align: "right" }); y += 6;
+  });
+  doc.line(10, y, rightX, y); y += 6;
+  sale.items.forEach(it => { doc.text(pdfSafeText(`${it.name} x${it.qty}`), 10, y); doc.text(fmtMoneyPDF(it.subtotal), rightX, y, { align: "right" }); y += 6; });
+  doc.line(10, y, rightX, y); y += 6;
+  const gst = sale.gst || { enabled:false, rate:18, gstin:"" };
+  if (gst.enabled) {
+    const b = gstBreakup(sale.total, gst.rate);
+    [["Taxable Value", fmtMoneyPDF(b.taxable)], [`CGST @ ${(gst.rate/2).toFixed(1)}%`, fmtMoneyPDF(b.cgst)], [`SGST @ ${(gst.rate/2).toFixed(1)}%`, fmtMoneyPDF(b.sgst)]].forEach(r => {
+      doc.text(r[0], 10, y); doc.text(r[1], rightX, y, { align: "right" }); y += 6;
+    });
+    doc.line(10, y, rightX, y); y += 6;
+  }
+  doc.setFont("courier","bold"); doc.setFontSize(12);
+  doc.text("TOTAL", 10, y); doc.text(fmtMoneyPDF(sale.total), rightX, y, { align: "right" }); y += 7;
+  doc.setFont("courier","normal"); doc.setFontSize(10);
+  doc.text("Payment", 10, y); doc.text(pdfSafeText(sale.methodDisplay || sale.method), rightX, y, { align: "right" });
+  doc.save(`${(sale.invoiceNo || "Receipt").replace(/[^\w-]/g,"_")}.pdf`);
+}
+
+function exportReceiptsExcel(){
+  const invoices = currentFilteredInvoices();
+  if (!invoices.length) { alert("No receipts match the current filter."); return; }
+  const rows = invoices.map(inv => {
+    const baseTotal = inv.sessions.reduce((a,s) => a + effectiveRevenue(s), 0);
+    const adj = receiptAdjustmentFor(inv.invoiceNo);
+    const total = baseTotal + (adj ? adj.amount : 0);
+    const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+    return {
+      Invoice: inv.invoiceNo, Date: inv.date, Time: inv.time,
+      Customer: inv.customerName || "", "Txn Ref": receiptTxnRefFor(inv.invoiceNo) || "",
+      Items: inv.sessions.map(sessionItemLabel).join(", "), Total: total,
+      Payment: split ? splitMethodLabel(split) : inv.method, Staff: inv.staff
     };
-    if (!liveConfig.mobileBookingEnabled && activeTab === "book") activeTab = "assign"; // if turned off while someone's on it, drop them back to Assign
-    renderTabBar();
-    renderQueue(); // chair availability may have changed
-    if (activeTab === "book") renderBookTab();
+  });
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Receipts");
+  XLSX.writeFile(wb, `Receipts_${receiptsFilterLabel()}.xlsx`);
+}
+function exportReceiptsPDFBulk(){
+  const invoices = currentFilteredInvoices();
+  if (!invoices.length) { alert("No receipts match the current filter."); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" });
+  doc.setFontSize(16);
+  doc.text(`${pdfSafeText(liveConfig.businessName || "RRG Lounge")} \u2014 Receipts`, 14, 16);
+  doc.setFontSize(10);
+  doc.text(`Generated: ${dmy()} ${timeStr()}`, 14, 24);
+  doc.autoTable({
+    startY: 30,
+    head: [["Invoice", "Date", "Time", "Customer", "Txn Ref", "Items", "Total", "Payment", "Staff"]],
+    body: invoices.map(inv => {
+      const baseTotal = inv.sessions.reduce((a,s) => a + effectiveRevenue(s), 0);
+      const adj = receiptAdjustmentFor(inv.invoiceNo);
+      const total = baseTotal + (adj ? adj.amount : 0);
+      const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+      return [pdfSafeText(inv.invoiceNo), inv.date, inv.time, pdfSafeText(inv.customerName||"-"), pdfSafeText(receiptTxnRefFor(inv.invoiceNo)||"-"), pdfSafeText(inv.sessions.map(sessionItemLabel).join(", ")), fmtMoneyPDF(total), pdfSafeText(split ? splitMethodLabel(split) : inv.method), pdfSafeText(inv.staff)];
+    }),
+    styles: { fontSize: 8 },
+    headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }
+  });
+  doc.save(`Receipts_${receiptsFilterLabel()}.pdf`);
+}
+
+async function renderReceiptsTab(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  el.classList.remove("op-grid");
+  const todayS = todayStr();
+  if (receiptsFilterFrom === null) receiptsFilterFrom = todayS;
+  if (receiptsFilterTo === null) receiptsFilterTo = todayS;
+  const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const yearOptions = [2026,2027].map(y => `<option value="${y}" ${String(receiptsFilterYear)===String(y)?"selected":""}>${y}</option>`).join("");
+  const monthOptions = MONTH_NAMES.map((name,i) => `<option value="${i}" ${String(receiptsFilterMonth)===String(i)?"selected":""}>${name}</option>`).join("");
+  const paymentOptions = ["UPI","Cash","Card","Split","Pending"].map(m => `<option value="${m}" ${receiptsFilterPaymentType===m?"selected":""}>${m}</option>`).join("");
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Receipts</div>
+      <p class="panel-help">View-only \u2014 look up any past bill to reprint it or save a copy as PDF.</p>
+      <div class="btn-group">
+        <div class="filter-field">Year<select id="rYear"><option value="">All</option>${yearOptions}</select></div>
+        <div class="filter-field">Month<select id="rMonth"><option value="">All</option>${monthOptions}</select></div>
+        <div class="filter-field">Payment<select id="rPay"><option value="">All</option>${paymentOptions}</select></div>
+        <div class="filter-field">From<input type="date" id="rFrom" value="${receiptsFilterFrom}"></div>
+        <div class="filter-field">To<input type="date" id="rTo" value="${receiptsFilterTo}"></div>
+        <div class="filter-field">Search<input type="text" id="rSearch" value="${escapeHtml(receiptsSearchInvoice)}" placeholder="Invoice / Customer / Txn Ref"></div>
+        <button class="btn btn-outline btn-small" id="rTodayBtn">Today Only</button>
+        <button class="btn btn-outline btn-small" id="rExcelBtn">Excel</button>
+        <button class="btn btn-outline btn-small" id="rPdfBtn">PDF</button>
+      </div>
+      <div class="table-scroll"><table class="data-table" id="rTable"><tbody><tr><td>Loading\u2026</td></tr></tbody></table></div>
+    </div>`;
+
+  document.getElementById("rYear").addEventListener("change", e => { receiptsFilterYear = e.target.value; refetchAndRenderReceipts(); });
+  document.getElementById("rMonth").addEventListener("change", e => { receiptsFilterMonth = e.target.value; refetchAndRenderReceipts(); });
+  document.getElementById("rPay").addEventListener("change", e => { receiptsFilterPaymentType = e.target.value; renderReceiptsTable(); });
+  document.getElementById("rFrom").addEventListener("change", e => { receiptsFilterFrom = e.target.value; refetchAndRenderReceipts(); });
+  document.getElementById("rTo").addEventListener("change", e => { receiptsFilterTo = e.target.value; refetchAndRenderReceipts(); });
+  document.getElementById("rSearch").addEventListener("input", e => { receiptsSearchInvoice = e.target.value; renderReceiptsTable(); });
+  document.getElementById("rTodayBtn").addEventListener("click", () => {
+    receiptsFilterYear = ""; receiptsFilterMonth = ""; receiptsFilterFrom = todayS; receiptsFilterTo = todayS;
+    document.getElementById("rYear").value = ""; document.getElementById("rMonth").value = "";
+    document.getElementById("rFrom").value = todayS; document.getElementById("rTo").value = todayS;
+    refetchAndRenderReceipts();
+  });
+  document.getElementById("rExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => exportReceiptsExcel()));
+  document.getElementById("rPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => exportReceiptsPDFBulk()));
+
+  await refetchAndRenderReceipts();
+}
+
+async function refetchAndRenderReceipts(){
+  // Year/Month filter searches across that whole span; a plain From/To searches just that range.
+  const from = (receiptsFilterYear || receiptsFilterMonth)
+    ? `${receiptsFilterYear || "2020"}-${receiptsFilterMonth !== "" ? String(parseInt(receiptsFilterMonth,10)+1).padStart(2,"0") : "01"}-01`
+    : receiptsFilterFrom;
+  const to = (receiptsFilterYear || receiptsFilterMonth)
+    ? `${receiptsFilterYear || "2035"}-${receiptsFilterMonth !== "" ? String(parseInt(receiptsFilterMonth,10)+1).padStart(2,"0") : "12"}-31`
+    : receiptsFilterTo;
+  const tableEl = document.getElementById("rTable");
+  if (tableEl) tableEl.innerHTML = `<tbody><tr><td>Loading\u2026</td></tr></tbody>`;
+  try {
+    await loadReceiptsRange(from, to);
+  } catch (e) {
+    if (tableEl) tableEl.innerHTML = `<tbody><tr><td>Couldn't load receipts: ${escapeHtml(e.message)}</td></tr></tbody>`;
+    return;
+  }
+  renderReceiptsTable();
+}
+
+function renderReceiptsTable(){
+  const tableEl = document.getElementById("rTable");
+  if (!tableEl) return;
+  const invoices = currentFilteredInvoices();
+  if (!invoices.length) { tableEl.innerHTML = `<tbody><tr><td>No receipts found for this filter.</td></tr></tbody>`; return; }
+
+  tableEl.innerHTML = `
+    <thead><tr><th>Invoice</th><th>Date</th><th>Customer</th><th>Txn Ref</th><th>Items</th><th>Total</th><th>Payment</th><th>Staff</th><th></th></tr></thead>
+    <tbody>${invoices.map(inv => {
+      const baseTotal = inv.sessions.reduce((a,s) => a + effectiveRevenue(s), 0);
+      const adj = receiptAdjustmentFor(inv.invoiceNo);
+      const total = baseTotal + (adj ? adj.amount : 0);
+      const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+      const totalCell = adj ? `${fmtMoney(total)}<div style="font-size:0.8rem;color:var(--pine-2);opacity:0.7;">(${fmtMoney(baseTotal)} ${adj.amount>=0?"+":"-"} ${fmtMoney(Math.abs(adj.amount))} ${escapeHtml(adj.label)})</div>` : fmtMoney(total);
+      return `<tr>
+        <td>${escapeHtml(inv.invoiceNo)}</td>
+        <td>${inv.date}<br>${inv.time}</td>
+        <td>${inv.customerName ? escapeHtml(inv.customerName) : "-"}</td>
+        <td>${receiptTxnRefFor(inv.invoiceNo) ? escapeHtml(receiptTxnRefFor(inv.invoiceNo)) : "-"}</td>
+        <td>${escapeHtml(inv.sessions.map(sessionItemLabel).join(", "))}</td>
+        <td>${totalCell}</td>
+        <td>${escapeHtml(split ? splitMethodLabel(split) : inv.method)}</td>
+        <td>${escapeHtml(inv.staff)}</td>
+        <td class="receipt-actions">
+          <button class="btn btn-small btn-primary r-print-btn" data-invoice="${escapeHtml(inv.invoiceNo)}">Print</button>
+          <button class="btn btn-small btn-outline r-pdf-btn" data-invoice="${escapeHtml(inv.invoiceNo)}">PDF</button>
+        </td>
+      </tr>`;
+    }).join("")}</tbody>`;
+
+  tableEl.querySelectorAll(".r-print-btn").forEach(b => b.addEventListener("click", () => withBusyButton(b, async () => {
+    const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
+    if (inv) printReceiptSimple(invoiceToSaleObject(inv));
+  })));
+  tableEl.querySelectorAll(".r-pdf-btn").forEach(b => b.addEventListener("click", () => withBusyButton(b, async () => {
+    const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
+    if (inv) exportReceiptPDFSimple(invoiceToSaleObject(inv));
+  })));
+}
+
+/* ========================= MALL SHARE TAB (view/export only) =========================
+   Same read-only scope already proven for role "mall_admin" in the main dashboard: Overview,
+   Daily Performance Summary, Revenue Share Report, Settlement Report. No Log a Settlement, no
+   Settlement History -- those stay internal to RRG Lounge's own dashboard.
+   Simplified from the source dashboard in one deliberate way: the cash-reconciliation
+   "recorded vs actual (bank-matched) vs variance" system is NOT ported here, because the real
+   money figures (Revenue/GST/Mall Share/Owner Share) are computed from RECORDED amounts either
+   way -- reconciliation only ever affected a variance column, never the actual owed amount. */
+
+function dmyShort(dateStr){
+  const [y,m,d] = dateStr.split("-");
+  return `${d}-${m}-${y.slice(2)}`;
+}
+
+let mallShareSessions = [], mallShareAdjustments = [], mallShareSplits = [], mallShareSettlements = [];
+let mallShareLoaded = false;
+
+async function loadMallShareData(){
+  const [sessSnap, adjSnap, splitSnap, settleSnap] = await Promise.all([
+    fsDb.collection("sessions").get(),
+    fsDb.collection("invoiceAdjustments").get(),
+    fsDb.collection("paymentSplits").get(),
+    fsDb.collection("shareSettlements").get()
+  ]);
+  mallShareSessions = sessSnap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+  mallShareAdjustments = adjSnap.docs.map(d => d.data());
+  mallShareSplits = splitSnap.docs.map(d => d.data());
+  mallShareSettlements = settleSnap.docs.map(d => d.data());
+  mallShareLoaded = true;
+}
+function msAdjustmentFor(invoiceNo){ return mallShareAdjustments.find(a => a.invoiceNo === invoiceNo) || null; }
+function msSplitFor(invoiceNo){ return mallShareSplits.find(p => p.invoiceNo === invoiceNo) || null; }
+
+function computeMdSummary(from, to){
+  const rows = mallShareSessions.filter(s => s.date >= from && s.date <= to);
+  const unitsUsed = new Set(rows.map(s => s.chairName).filter(Boolean)).size;
+  let totalRevenue = rows.reduce((a,s) => a + effectiveRevenue(s), 0);
+
+  const pkgAgg = {}; const pkgOrder = [];
+  rows.forEach(s => {
+    const key = cartItemName(s.chairName, s.packageLabel, s.unitType);
+    if (!pkgAgg[key]) { pkgAgg[key] = { count: 0, revenue: 0 }; pkgOrder.push(key); }
+    pkgAgg[key].count++;
+    pkgAgg[key].revenue += effectiveRevenue(s);
   });
 
-  // Real-time listeners, not polling -- Firestore only counts an actual document read when
-  // something genuinely changes, which is far cheaper (and far more instant) than this page
-  // re-fetching everything on a timer all day.
-  unsubQueue = fsDb.collection("waitingQueue").onSnapshot(snap => {
-    queueRows = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
-    renderQueue();
-  }, err => { document.getElementById("queueList").innerHTML = `<div class="empty-note">Couldn't load queue: ${escapeHtml(err.message)}</div>`; });
+  const payAgg = { UPI: 0, Cash: 0, Card: 0, Pending: 0 };
+  const seenSplitInvoices = new Set();
+  rows.forEach(s => {
+    const rev = effectiveRevenue(s);
+    if (rev <= 0) return;
+    if (s.method === "Split") {
+      if (!s.invoiceNo || seenSplitInvoices.has(s.invoiceNo)) return;
+      seenSplitInvoices.add(s.invoiceNo);
+      const split = msSplitFor(s.invoiceNo);
+      if (split) split.splits.forEach(row => { payAgg[row.method] = (payAgg[row.method] || 0) + row.amount; });
+      return;
+    }
+    if (!(s.method in payAgg)) payAgg[s.method] = 0;
+    payAgg[s.method] += rev;
+  });
 
-  unsubSessions = fsDb.collection("sessions").where("status", "==", "running").onSnapshot(snap => {
-    sessionRows = snap.docs.map(d => d.data());
-    renderChairs();
-  }, err => { document.getElementById("chairList").innerHTML = `<div class="empty-note">Couldn't load chair status: ${escapeHtml(err.message)}</div>`; });
+  const seenAdjInvoices = new Set();
+  rows.forEach(s => {
+    if (!s.invoiceNo || seenAdjInvoices.has(s.invoiceNo)) return;
+    const adj = msAdjustmentFor(s.invoiceNo);
+    if (!adj) return;
+    seenAdjInvoices.add(s.invoiceNo);
+    totalRevenue += adj.amount;
+    if (!pkgAgg[adj.label]) { pkgAgg[adj.label] = { count: 0, revenue: 0 }; pkgOrder.push(adj.label); }
+    pkgAgg[adj.label].count++;
+    pkgAgg[adj.label].revenue += adj.amount;
+    payAgg[adj.method] = (payAgg[adj.method] || 0) + adj.amount;
+  });
 
-  // Phones aggressively pause background network activity to save battery -- the tab can stay
-  // "open" while its live connection silently goes stale (screen locked, app switched away from
-  // for a while). The listeners above should self-heal on their own, but that isn't always
-  // prompt or reliable in practice -- so force one fresh, explicit read the moment the screen
-  // actually comes back on, guaranteeing correctness right when someone's about to act on it,
-  // rather than trusting a background reconnection that may still be catching up. Guarded
-  // against duplicates since buildApp() runs again on every fresh login, not just once per page.
-  if (!_visibilityListenerAdded) {
-    _visibilityListenerAdded = true;
-    document.addEventListener("visibilitychange", async () => {
-      if (document.visibilityState !== "visible" || !currentUser) return;
-      try {
-        const [queueSnap, sessionSnap] = await Promise.all([
-          fsDb.collection("waitingQueue").get(),
-          fsDb.collection("sessions").where("status", "==", "running").get()
-        ]);
-        queueRows = queueSnap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
-        sessionRows = sessionSnap.docs.map(d => d.data());
-        renderQueue();
-        renderChairs();
-      } catch (e) { /* the live listeners will keep trying regardless -- this was just a bonus freshness check */ }
-    });
+  const mdSharePercent = liveConfig.mdSharePercent;
+  const mdShare = totalRevenue * (mdSharePercent / 100);
+  const ownerShare = totalRevenue - mdShare;
+  return { totalSessions: rows.length, unitsUsed, totalRevenue, pkgAgg, pkgOrder, payAgg, mdSharePercent, mdShare, ownerShare };
+}
+
+// Same money math the dashboard uses -- recorded amounts, not a bank-reconciled "actual" figure
+// (see file header note above for why that's correct, not a simplification of the real number).
+function paymentMethodFinal(rec){
+  const totalRecorded = ["UPI","Cash","Card","Pending"].reduce((a,m) => a + (rec.payAgg[m] || 0), 0);
+  const gstRegistered = !!liveConfig.gstEnabled;
+  const gstRate = liveConfig.gstRate || 0;
+  const baseRevenue = gstRegistered ? totalRecorded / (1 + gstRate/100) : totalRecorded;
+  const gstAmount = gstRegistered ? totalRecorded - baseRevenue : 0;
+  const finalMdShare = baseRevenue * (rec.mdSharePercent / 100);
+  const finalOwnerShare = baseRevenue - finalMdShare;
+  return { finalTotalRevenue: totalRecorded, gstRegistered, gstRate, baseRevenue, gstAmount, finalMdShare, finalOwnerShare };
+}
+function buildAdhocRec(from, to){
+  const s = computeMdSummary(from, to);
+  return { periodFrom: from, periodTo: to, totalSessions: s.totalSessions, unitsUsed: s.unitsUsed, pkgOrder: s.pkgOrder, pkgAgg: s.pkgAgg, payAgg: s.payAgg, totalRevenue: s.totalRevenue, mdSharePercent: s.mdSharePercent, mdShareAmount: s.mdShare, ownerShareAmount: s.ownerShare };
+}
+function mallShareForRange(from, to){
+  if (from > to) return 0;
+  return paymentMethodFinal(buildAdhocRec(from, to)).finalMdShare;
+}
+function settledAmountForRange(from, to){
+  let total = 0;
+  for (const r of mallShareSettlements) {
+    if (r.status !== "transferred") continue;
+    const oFrom = r.periodFrom > from ? r.periodFrom : from;
+    const oTo = r.periodTo < to ? r.periodTo : to;
+    if (oFrom > oTo) continue;
+    const fullOwedForSettlement = mallShareForRange(r.periodFrom, r.periodTo);
+    const ratio = fullOwedForSettlement > 0 ? Math.min(1, (r.mdShareAmount || 0) / fullOwedForSettlement) : 0;
+    total += mallShareForRange(oFrom, oTo) * ratio;
   }
-  renderTabBar();
+  return total;
+}
+function unsettledAmountForRange(from, to){
+  const raw = mallShareForRange(from, to) - settledAmountForRange(from, to);
+  const rounded = Math.round(raw * 100) / 100;
+  return rounded > 1 ? rounded : 0;
+}
+function isRangeFullySettled(from, to){ return unsettledAmountForRange(from, to) < 0.5; }
+function latestCoveringSettlement(from, to){
+  const covering = mallShareSettlements.filter(r => r.status === "transferred" && !(to < r.periodFrom || from > r.periodTo)).sort((a,b) => (b.transferDate||"").localeCompare(a.transferDate||""));
+  return covering[0] || null;
+}
+function settlementsInBusinessPeriod(from, to){
+  return mallShareSettlements.filter(r => r.status === "transferred" && !(r.periodTo < from || r.periodFrom > to)).sort((a,b) => (a.periodFrom||"").localeCompare(b.periodFrom||""));
 }
 
-function renderTabBar(){
-  const el = document.getElementById("tabBar");
+// Adds our logo (left) and the mall's logo (right) to a jsPDF doc, reusing the SAME <img>
+// elements already loaded in the top bar -- no separate base64 config needed.
+// Re-encodes any loaded <img> (regardless of its original format -- webp, jpg, whatever) into a
+// PNG data URL via canvas. jsPDF's addImage only understands PNG/JPEG natively; webp specifically
+// isn't supported at all, so passing it straight through corrupts or silently drops the image.
+// Going through canvas sidesteps the format question entirely -- the browser decodes the source
+// image (webp decoding is a normal browser capability), and toDataURL always re-encodes as PNG.
+function imageToPngDataUrl(imgEl){
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = imgEl.naturalWidth;
+    canvas.height = imgEl.naturalHeight;
+    canvas.getContext("2d").drawImage(imgEl, 0, 0);
+    return canvas.toDataURL("image/png");
+  } catch (e) { return null; }
+}
+
+function addPdfLogos(doc, y, pageWidth){
+  const logoH = 13;
+  const rrgImg = document.getElementById("rrgLogoImg");
+  const mallImg = document.getElementById("mallLogoImg");
+  let used = false;
+  if (rrgImg && rrgImg.style.display !== "none" && rrgImg.naturalWidth) {
+    const dataUrl = imageToPngDataUrl(rrgImg);
+    if (dataUrl) {
+      const w = logoH * (rrgImg.naturalWidth / rrgImg.naturalHeight);
+      try { doc.addImage(dataUrl, "PNG", 14, y, w, logoH); used = true; } catch(e) {}
+    }
+  }
+  if (mallImg && mallImg.style.display !== "none" && mallImg.naturalWidth) {
+    const dataUrl = imageToPngDataUrl(mallImg);
+    if (dataUrl) {
+      const w = logoH * (mallImg.naturalWidth / mallImg.naturalHeight);
+      try { doc.addImage(dataUrl, "PNG", pageWidth - 14 - w, y, w, logoH); used = true; } catch(e) {}
+    }
+  }
+  return used ? y + logoH + 5 : y;
+}
+
+function exportRevenueShareStatementPDF(rec){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const pageWidth = 210;
+  let y = addPdfLogos(doc, 12, pageWidth);
+  doc.setFontSize(15); doc.setFont("helvetica","bold");
+  doc.text("Revenue Share Statement", 14, y);
+  doc.setFont("helvetica","normal"); doc.setFontSize(10);
+  doc.text(pdfSafeText(liveConfig.businessName), pageWidth - 14, y, { align: "right" }); y += 6;
+  doc.setFontSize(9);
+  doc.text(`Period: ${dmyShort(rec.periodFrom)} to ${dmyShort(rec.periodTo)}`, 14, y);
+  doc.text(`Generated: ${dmy()} ${timeStr()}`, pageWidth - 14, y, { align: "right" }); y += 5;
+  if (liveConfig.mdName) { doc.text(`Prepared for: ${pdfSafeText(liveConfig.mdName)}`, 14, y); y += 5; }
+  y += 3;
+
+  doc.autoTable({ startY: y, body: [["Units Used", String(rec.unitsUsed), "Total Sessions", String(rec.totalSessions)]], styles: { fontSize: 10 }, columnStyles: { 0: { fontStyle: "bold" }, 2: { fontStyle: "bold" } }, theme: "plain" });
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, head: [["Package", "Sessions", "Revenue"]], body: (rec.pkgOrder||[]).map(k => [pdfSafeText(k), rec.pkgAgg[k].count, fmtMoneyPDF(rec.pkgAgg[k].revenue)]), styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] } });
+
+  const fin = paymentMethodFinal(rec);
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 3,
+    head: [["Payment Method", "Amount"]],
+    body: ["UPI","Cash","Card","Pending"].map(m => [m, fmtMoneyPDF(rec.payAgg[m]||0)]),
+    foot: [["Total", fmtMoneyPDF(fin.finalTotalRevenue)]],
+    styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }, footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" }
+  });
+
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 6,
+    body: [
+      [fin.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", fmtMoneyPDF(fin.finalTotalRevenue)],
+      ...(fin.gstRegistered ? [[`GST (${fin.gstRate}%)`, fmtMoneyPDF(fin.gstAmount)], ["Base Revenue (excl. GST)", fmtMoneyPDF(fin.baseRevenue)]] : []),
+      [`Mall Share (${rec.mdSharePercent}%${fin.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(fin.finalMdShare)],
+      [`RRG Lounge Share (${100-rec.mdSharePercent}%${fin.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(fin.finalOwnerShare)]
+    ],
+    styles: { fontSize: 11, fontStyle: "bold" }, theme: "plain"
+  });
+  doc.save(`Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}.pdf`);
+}
+function exportRevenueShareStatementExcel(rec){
+  const fin = paymentMethodFinal(rec);
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    [`Revenue Share Statement \u2014 ${liveConfig.businessName}`],
+    [`Period: ${rec.periodFrom} to ${rec.periodTo}`], []
+  ]);
+  XLSX.utils.sheet_add_json(ws, (rec.pkgOrder||[]).map(k => ({ Package: k, Sessions: rec.pkgAgg[k].count, Revenue: rec.pkgAgg[k].revenue })), { origin: -1 });
+  XLSX.utils.sheet_add_aoa(ws, [[], ["Total Revenue", fin.finalTotalRevenue], [`Mall Share (${rec.mdSharePercent}%)`, fin.finalMdShare], [`RRG Lounge Share (${100-rec.mdSharePercent}%)`, fin.finalOwnerShare]], { origin: -1 });
+  XLSX.utils.book_append_sheet(wb, ws, "Revenue Share");
+  XLSX.writeFile(wb, `Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}.xlsx`);
+}
+function exportSettlementReportPDF(from, to, settlements){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const pageWidth = 210;
+  let y = addPdfLogos(doc, 12, pageWidth);
+  doc.setFontSize(16); doc.setFont("helvetica","bold");
+  doc.text("Settlement Report", pageWidth/2, y, { align: "center" }); y += 7;
+  doc.setFont("helvetica","normal"); doc.setFontSize(10);
+  doc.text(pdfSafeText(liveConfig.businessName), pageWidth/2, y, { align: "center" }); y += 5;
+  doc.text(`Settlements covering business period ${dmyShort(from)} to ${dmyShort(to)}`, pageWidth/2, y, { align: "center" }); y += 5;
+  doc.text(`Generated: ${dmy()} ${timeStr()}`, pageWidth/2, y, { align: "center" }); y += 8;
+  doc.autoTable({
+    startY: y,
+    head: [["Period Covered", "Transfer Date", "Mode", "From", "To (Name)", "To (Account No.)", "Reference", "Amount"]],
+    body: settlements.map(r => [`${dmyShort(r.periodFrom)}-${dmyShort(r.periodTo)}`, dmyShort(r.transferDate), r.transferMethod||"-", r.transferredFrom||"-", r.transferredToName||"-", r.transferredToNumber||"-", r.transferReference||"-", fmtMoneyPDF(r.mdShareAmount)]),
+    foot: [["","","","","","","TOTAL", fmtMoneyPDF(settlements.reduce((a,r) => a + r.mdShareAmount, 0))]],
+    styles: { fontSize: 8.5, cellPadding: 2 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }, footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" }
+  });
+  if (!settlements.length) { doc.setFontSize(10); doc.text("No settlements cover any part of this business period.", 14, y + 10); }
+  doc.save(`Settlement_Report_${from}_to_${to}.pdf`);
+}
+function exportSettlementReportExcel(from, to, settlements){
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([[`Settlement Report \u2014 Business Period: ${from} to ${to}`], []]);
+  XLSX.utils.sheet_add_json(ws, settlements.map(r => ({ "Period Covered": `${r.periodFrom} to ${r.periodTo}`, "Transfer Date": r.transferDate, Mode: r.transferMethod||"-", From: r.transferredFrom||"-", "To (Name)": r.transferredToName||"-", "To (Account No.)": r.transferredToNumber||"-", Reference: r.transferReference||"-", Amount: r.mdShareAmount })), { origin: -1 });
+  XLSX.utils.sheet_add_aoa(ws, [["","","","","","","TOTAL", settlements.reduce((a,r) => a + r.mdShareAmount, 0)]], { origin: -1 });
+  XLSX.utils.book_append_sheet(wb, ws, "Settlement Report");
+  XLSX.writeFile(wb, `Settlement_Report_${from}_to_${to}.xlsx`);
+}
+
+async function renderMallShareTab(){
+  const el = document.getElementById("mainContent");
   if (!el) return;
-  const tabs = [{ id: "assign", label: "Assign" }];
-  if (liveConfig.mobileBookingEnabled) tabs.push({ id: "book", label: "Book" });
-  el.innerHTML = tabs.map(t => `<div class="tab${t.id === activeTab ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("");
-  el.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+  el.classList.remove("op-grid");
+  el.innerHTML = `<p class="panel-help">Loading\u2026</p>`;
+  if (!mallShareLoaded) {
+    try { await loadMallShareData(); }
+    catch (e) { el.innerHTML = `<p class="panel-help">Couldn't load Mall Share data: ${escapeHtml(e.message)}</p>`; return; }
+  }
+  const dates = mallShareSessions.map(s => s.date).sort();
+  const earliest = dates[0] || todayStr();
+  const todayS = todayStr();
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Mall Share \u2014 Overview</div>
+      <table class="data-table">
+        <tr><td>Total Settled to Mall (All-Time)</td><td id="msOverviewSettled">\u2014</td></tr>
+        <tr><td>Total Outstanding (All-Time)</td><td id="msOverviewOutstanding">\u2014</td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Revenue Share Report (Daily / Any Range)</div>
+      <p class="panel-help">Generate the statement for any date or range \u2014 what you'd share with the mall on a normal day.</p>
+      <div class="btn-group">
+        <div class="filter-field">From<input type="date" id="rsrFrom" value="${todayS}"></div>
+        <div class="filter-field">To<input type="date" id="rsrTo" value="${todayS}"></div>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrToday">Today</button>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrYesterday">Yesterday</button>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrWeek">This Week</button>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrMonth">This Month</button>
+      </div>
+      <div id="rsrPreview"></div>
+      <button class="btn btn-primary btn-small" id="rsrExportPdfBtn" style="margin-top:10px;">Export PDF</button>
+      <button class="btn btn-outline btn-small" id="rsrExportExcelBtn" style="margin-top:10px;">Export Excel</button>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Settlement Report</div>
+      <p class="panel-help">A clean list of settlements covering a given period \u2014 for whenever the mall asks for a settlement report.</p>
+      <div class="btn-group">
+        <div class="filter-field">From<input type="date" id="srFrom" value="${todayS}"></div>
+        <div class="filter-field">To<input type="date" id="srTo" value="${todayS}"></div>
+        <button class="btn btn-outline btn-small qr-btn" id="srLast1Month">Last 1 Month</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srLast3Months">Last 3 Months</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srLast6Months">Last 6 Months</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srLast1Year">Last 1 Year</button>
+        <button class="btn btn-outline btn-small qr-btn" id="srAll">All-Time</button>
+      </div>
+      <button class="btn btn-primary btn-small" id="srExportPdfBtn">Export PDF</button>
+      <button class="btn btn-outline btn-small" id="srExportExcelBtn">Export Excel</button>
+    </div>
+  `;
+
+  document.getElementById("msOverviewSettled").textContent = fmtMoney(settledAmountForRange(earliest, todayS));
+  document.getElementById("msOverviewOutstanding").textContent = fmtMoney(unsettledAmountForRange(earliest, todayS));
+
+  function renderRsrPreview(){
+    const from = document.getElementById("rsrFrom").value || earliest;
+    const to = document.getElementById("rsrTo").value || todayS;
+    const fin = paymentMethodFinal(buildAdhocRec(from, to));
+    const settled = isRangeFullySettled(from, to);
+    const covering = settled ? latestCoveringSettlement(from, to) : null;
+    const settledWhy = covering ? `<p class="panel-help">Covered by settlement logged for ${dmyShort(covering.periodFrom)} to ${dmyShort(covering.periodTo)} (${escapeHtml(covering.transferMethod||"")}, ${dmyShort(covering.transferDate)}${covering.transferReference ? ", Ref: " + escapeHtml(covering.transferReference) : ""}).</p>` : "";
+    document.getElementById("rsrPreview").innerHTML = `
+      <table class="data-table">
+        <tr><td>Period</td><td>${dmyShort(from)} to ${dmyShort(to)}</td></tr>
+        <tr><td>Total Revenue</td><td>${fmtMoney(fin.finalTotalRevenue)}</td></tr>
+        <tr><td>Mall Share (${fin.finalTotalRevenue ? Math.round(fin.finalMdShare/fin.baseRevenue*100) : liveConfig.mdSharePercent}%)</td><td>${fmtMoney(fin.finalMdShare)}</td></tr>
+        <tr><td>Settlement Status</td><td>${settled ? "\u2705 Settled" : "\u26A0 Pending"}</td></tr>
+      </table>${settledWhy}`;
+  }
+  renderRsrPreview();
+  document.getElementById("rsrFrom").addEventListener("change", renderRsrPreview);
+  document.getElementById("rsrTo").addEventListener("change", renderRsrPreview);
+  document.getElementById("rsrToday").addEventListener("click", (e) => { markActiveQuickRange(e.target); document.getElementById("rsrFrom").value = todayS; document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrYesterday").addEventListener("click", (e) => { markActiveQuickRange(e.target); const y = new Date(); y.setDate(y.getDate()-1); const ys = todayStrFromDate(y); document.getElementById("rsrFrom").value = ys; document.getElementById("rsrTo").value = ys; renderRsrPreview(); });
+  document.getElementById("rsrWeek").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); const ws = new Date(now.getFullYear(), now.getMonth(), now.getDate()-now.getDay()); document.getElementById("rsrFrom").value = todayStrFromDate(ws); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrMonth").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("rsrFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1)); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementPDF(buildAdhocRec(from, to)); }));
+  document.getElementById("rsrExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementExcel(buildAdhocRec(from, to)); }));
+
+  document.getElementById("srLast1Month").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-1, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast3Months").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-3, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast6Months").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-6, now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srLast1Year").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear()-1, now.getMonth(), now.getDate())); document.getElementById("srTo").value = todayS; });
+  document.getElementById("srAll").addEventListener("click", (e) => { markActiveQuickRange(e.target); document.getElementById("srFrom").value = earliest; document.getElementById("srTo").value = todayS; });
+  document.getElementById("srExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportPDF(from, to, settlementsInBusinessPeriod(from, to)); }));
+  document.getElementById("srExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("srFrom").value || earliest; const to = document.getElementById("srTo").value || todayS; exportSettlementReportExcel(from, to, settlementsInBusinessPeriod(from, to)); }));
+}
+function todayStrFromDate(d){ return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
+
+/* ========================= QUEUE TAB (staff + admin, not mall_admin) =========================
+   Ported from RRG_Staff_Queue_View.html -- same two real writes as that file (toggle "called",
+   start a token on a chair), same narrow scope: never touches checkout, pricing, or payment.
+   Chair busy/free status is derived from sessionsToday (already loaded for Operations) instead
+   of a separate "sessions where running" listener, since that data's already on hand here. */
+function freeMatchingChairs(unitType){
+  const busy = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
+  return activeChairOrder().filter(c => unitTypeOf(c) === unitType && !busy.has(c));
 }
 
-function switchTab(tab){
-  activeTab = tab;
-  renderTabBar();
-  document.getElementById("assignContent").style.display = tab === "assign" ? "" : "none";
-  document.getElementById("bookContent").style.display = tab === "book" ? "" : "none";
-  if (tab === "book") renderBookTab();
+// Best-effort "ready by" estimate for a waiting token: soonest matching chair frees up, in queue
+// order (anyone ahead in line for the SAME unit type claims the earlier slot first). This is my
+// own approximation of the same logic principle the main dashboard's printed estimate uses --
+// I don't have that dashboard's exact source, so treat this as a good-faith estimate, not a
+// guaranteed match to what was printed at booking.
+function estimateReadyTs(q){
+  const now = Date.now();
+  const chairsOfType = activeChairOrder().filter(c => unitTypeOf(c) === q.unitType);
+  if (!chairsOfType.length) return null;
+  const freeTimes = chairsOfType.map(c => {
+    const running = getRunningSession(c);
+    return running ? sessionEffectiveEndTs(running) : now;
+  }).sort((a,b) => a - b);
+
+  const sameType = queueRows.filter(x => x.unitType === q.unitType).slice().sort((a,b) => (a.addedAt||0) - (b.addedAt||0));
+  const myRank = sameType.findIndex(x => x.id === q.id);
+  if (myRank < 0) return null;
+  // Assign each queued item (in order) to whichever chair is soonest free, then that chair's
+  // next-free-time becomes "start + this item's own duration" for whoever's next behind it.
+  const slots = freeTimes.slice();
+  let readyAt = now;
+  for (let i = 0; i <= myRank; i++) {
+    slots.sort((a,b) => a - b);
+    const startAt = Math.max(now, slots[0]);
+    const durMatch = String(sameType[i].packageLabel || "").match(/(\d+)\s*m/i);
+    const durMin = durMatch ? parseInt(durMatch[1], 10) : 10; // fallback if unparsable
+    slots[0] = startAt + durMin * 60000;
+    readyAt = startAt;
+  }
+  return readyAt;
+}
+function formatReadyEstimate(readyAt){
+  if (readyAt == null) return "";
+  const mins = Math.round((readyAt - Date.now()) / 60000);
+  const timeLabel = new Date(readyAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
+  if (mins <= 0) return `Ready now`;
+  return `Est. ready ~${mins} min (${timeLabel})`;
 }
 
-function renderQueue(){
-  const el = document.getElementById("queueList");
+// A live Firestore update (someone else marking a token called, a new booking arriving) calls
+// render() at any moment. If that happens to land while a chair-picker dropdown is actually open,
+// the whole panel gets rebuilt underneath the user's finger and their in-progress tap is lost --
+// this is exactly what looked like "selecting a chair doesn't do anything." These two flags pause
+// re-rendering the Queue tab specifically while a dropdown is open, and catch up the moment it
+// closes, so a live update can never interrupt a selection in progress.
+let queueInteractionActive = false;
+let queueRerenderPending = false;
+let queueInteractionSafetyTimer = null;
+let lastQueueSyncTs = null;
+let queueListenerError = null;
+let queueStaleTicker = null;
+
+function renderQueueTab(){
+  const el = document.getElementById("mainContent");
   if (!el) return;
-  if (!queueRows.length) { el.innerHTML = `<div class="empty-note">No one waiting right now.</div>`; return; }
+  el.classList.remove("op-grid");
+  try {
+    renderQueueTabInner(el);
+  } catch (e) {
+    // Fail visibly. A silent failure here would leave whatever was on screen before frozen in
+    // place with zero indication anything's wrong -- exactly the dangerous kind of bug for a
+    // live queue. Showing the real error means it's diagnosable immediately instead of a mystery.
+    el.innerHTML = `<div class="panel"><div class="panel-title">Couldn't load the Queue</div><p class="panel-help">${escapeHtml(e.message)}</p><p class="panel-help">Try reloading the page. If this keeps happening, send this exact message along.</p></div>`;
+    console.error("renderQueueTab failed:", e);
+  }
+}
+
+function renderQueueTabInner(el){
+  const syncAgoSec = lastQueueSyncTs ? Math.round((Date.now() - lastQueueSyncTs) / 1000) : null;
+  const syncLabel = syncAgoSec == null ? "Not synced yet" : (syncAgoSec < 3 ? "Synced just now" : `Synced ${syncAgoSec}s ago`);
+  const busyNames = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
+  const chairRows = [...busyNames].sort().map(name => `
+    <tr><td><span class="dot dot-red"></span>${escapeHtml(name)}</td><td>Running</td></tr>
+  `).join("");
+
   const sorted = queueRows.slice().sort((a,b) => (a.addedAt||0) - (b.addedAt||0));
-  el.innerHTML = sorted.map(q => {
+  const queueHtml = !sorted.length ? `<p class="panel-help">No one waiting right now.</p>` : sorted.map(q => {
     const freeChairs = freeMatchingChairs(q.unitType);
+    const readyEstimate = freeChairs.length ? "" : formatReadyEstimate(estimateReadyTs(q));
     return `
-    <div class="queue-card ${q.called ? "called" : ""}">
-      <div class="queue-label">${escapeHtml(q.label || "Token")}</div>
-      <div class="queue-meta">${escapeHtml(q.unitType || "")} \u00b7 ${escapeHtml(q.packageLabel || "")}${q.customerName ? " \u00b7 " + escapeHtml(q.customerName) : ""}</div>
-      <span class="badge ${q.paid ? "badge-paid" : "badge-unpaid"}">${q.paid ? "Paid" : "Not yet paid"}</span>
-      ${q.called ? `<span class="badge badge-called">Called</span>` : ""}
-      <button class="call-btn ${q.called ? "done" : ""}" data-action="call" data-id="${q.id}">${q.called ? "Marked as Called \u2014 tap to undo" : "Mark as Called"}</button>
+    <div class="panel" style="${q.called ? "opacity:0.6;" : ""}">
+      <div style="font-weight:700; font-size:1.15rem;">${escapeHtml(q.label || "Token")}</div>
+      <div class="panel-help" style="margin-bottom:4px;">${escapeHtml(q.unitType || "")} \u00b7 ${escapeHtml(q.packageLabel || "")}${q.customerName ? " \u00b7 " + escapeHtml(q.customerName) : ""}${readyEstimate ? " \u00b7 " + escapeHtml(readyEstimate) : ""}</div>
+      <div style="margin-bottom:8px;">
+        <span class="btn-small btn-outline" style="display:inline-block;">${q.paid ? "Paid" : "Not yet paid"}</span>
+        ${q.called ? `<span class="btn-small btn-outline" style="display:inline-block;">Called</span>` : ""}
+      </div>
+      <button class="btn-outline btn-small call-btn" style="width:100%; padding:10px; margin-bottom:8px;" data-action="call" data-id="${q.id}">${q.called ? "Marked as Called \u2014 tap to undo" : "Mark as Called"}</button>
       ${freeChairs.length ? `
-        <select data-action="start" data-id="${q.id}">
+        <select data-action="start" data-id="${q.id}" style="width:100%; padding:10px; border-radius:6px; border:1px solid var(--line); background:var(--cream); color:var(--ink); font-family:'Inter',sans-serif;">
           <option value="">Start on a chair\u2026</option>
           ${freeChairs.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
         </select>
-      ` : `<p class="assign-note">No matching unit free right now.</p>`}
+      ` : `<p class="panel-help">No matching unit free right now.</p>`}
+    </div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Waiting Queue</div>
+      <p class="panel-help">${escapeHtml(syncLabel)}${syncAgoSec != null && syncAgoSec > 20 ? " \u2014 this looks stale, try reloading the page" : ""}</p>
+      ${queueListenerError ? `<p class="panel-help" style="color:#b3432f;">Couldn't load the live queue: ${escapeHtml(queueListenerError)}. Please reload the page.</p>` : ""}
+      ${queueHtml}
+    </div>
+    <div class="panel">
+      <div class="panel-title">Chair Status</div>
+      ${busyNames.size ? `<table><thead><tr><th>Unit</th><th>Status</th></tr></thead><tbody>${chairRows}</tbody></table>` : `<p class="panel-help">All units free.</p>`}
     </div>
   `;
-  }).join("");
+
   el.querySelectorAll(".call-btn").forEach(b => b.addEventListener("click", async () => {
     const id = parseInt(b.dataset.id, 10);
     const q = queueRows.find(x => x.id === id);
     if (!q) return;
     b.disabled = true;
     try {
-      await fsDb.collection("waitingQueue").doc(String(id)).update({ called: !q.called, calledAt: !q.called ? Date.now() : null, calledBy: !q.called ? currentUser.staffId : null });
+      await fsDb.collection("waitingQueue").doc(String(id)).update({ called: !q.called, calledAt: !q.called ? Date.now() : null, calledBy: !q.called ? (fbAuth.currentUser.email.split("@")[0]) : null });
     } catch (e) {
       if (e.code === "not-found") alert("This token has already been started (by the desk or another phone) \u2014 it's no longer in the waiting queue.");
       else alert("Couldn't update: " + e.message);
     }
     b.disabled = false;
   }));
-  el.querySelectorAll('select[data-action="start"]').forEach(sel => sel.addEventListener("change", async () => {
-    const id = parseInt(sel.dataset.id, 10);
-    const chairName = sel.value;
-    if (!chairName) return;
-    const ok = await startFromQueue(id, chairName);
-    if (!ok) sel.value = ""; // reset the dropdown if it was cancelled or failed, so it doesn't look like it went through
-  }));
+  el.querySelectorAll('select[data-action="start"]').forEach(sel => {
+    sel.addEventListener("focus", () => {
+      queueInteractionActive = true;
+      // Safety net: if blur never fires for some reason (app backgrounded mid-tap, etc.), don't
+      // let this stay stuck forever and silently block every future update -- release it after
+      // a few seconds no one could plausibly still be mid-selection.
+      clearTimeout(queueInteractionSafetyTimer);
+      queueInteractionSafetyTimer = setTimeout(() => {
+        queueInteractionActive = false;
+        if (queueRerenderPending) { queueRerenderPending = false; renderQueueTab(); }
+      }, 8000);
+    });
+    sel.addEventListener("blur", () => {
+      clearTimeout(queueInteractionSafetyTimer);
+      queueInteractionActive = false;
+      if (queueRerenderPending) { queueRerenderPending = false; renderQueueTab(); }
+    });
+    sel.addEventListener("change", async () => {
+      const id = parseInt(sel.dataset.id, 10);
+      const chairName = sel.value;
+      if (!chairName) return;
+      const ok = await startFromQueue(id, chairName);
+      if (!ok) sel.value = "";
+    });
+  });
 }
 
-// Directly starts the session -- the SAME real action the desk's "Start on Chair" button
-// performs, not just a suggestion this time. A confirmation showing the exact token, customer
-// name, package, and chair is the safety net here: it's the moment to catch "wait, that's the
-// wrong chair" or "that's not who's actually here" before anything is locked in. Deliberately
-// does NOT touch payment or printing -- that already happened at checkout; starting is purely
-// a status change (chair assigned, timer begins), same as the desktop.
+// Directly starts the session -- the same real action the desk's "Start on Chair" button
+// performs. A confirmation showing the exact token, customer, package, and chair is the safety
+// net: the moment to catch "wrong chair" or "wrong person" before it's locked in. Deliberately
+// does NOT touch payment or printing -- purely a status change (chair assigned, timer begins).
 async function startFromQueue(qid, chairName){
   const q = queueRows.find(x => x.id === qid);
   if (!q) return false;
-  // Re-check right before acting -- someone else may have started a session on this chair in
-  // the last few seconds since the list last refreshed.
-  if (sessionRows.some(s => s.chairName === chairName)) {
+  if (sessionsToday.some(s => s.status === "running" && s.chairName === chairName)) {
     alert(`${chairName} isn't free anymore \u2014 pick another available unit.`);
     return false;
   }
   const confirmMsg = `Start ${q.label || "this token"}${q.customerName ? " \u2014 " + q.customerName : ""} (${q.packageLabel || ""}) on ${chairName}?`;
   if (!confirm(confirmMsg)) return false;
-
   try {
     if (!q.sessionId) { alert("This token has no linked record \u2014 please start it from the main dashboard instead."); return false; }
     const sessionRef = fsDb.collection("sessions").doc(String(q.sessionId));
     const sessionSnap = await sessionRef.get();
     if (!sessionSnap.exists) { alert("Couldn't find this booking's record \u2014 please start it from the main dashboard instead."); return false; }
-    await sessionRef.update({ chairName, status: "running", startTs: Date.now(), endTs: null });
-    await fsDb.collection("waitingQueue").doc(String(qid)).delete();
+    // Both writes MUST land together -- on a flaky mobile connection, doing these as two
+    // separate sequential calls meant a dropped second call (the queue delete) could leave the
+    // queue entry behind even though the session had already actually started, making it look
+    // like the assign silently failed and needed doing again. A batch makes that impossible:
+    // either both writes commit, or neither does.
+    const batch = fsDb.batch();
+    batch.update(sessionRef, { chairName, status: "running", startTs: Date.now(), endTs: null });
+    batch.delete(fsDb.collection("waitingQueue").doc(String(qid)));
+    await batch.commit();
     return true;
   } catch (e) {
     alert("Couldn't start this session: " + e.message);
@@ -322,287 +1530,86 @@ async function startFromQueue(qid, chairName){
   }
 }
 
-function renderChairs(){
-  const el = document.getElementById("chairList");
+/* ========================= ANALYTICS TAB (view only) =========================
+   Reuses the same all-time session data already loaded for Mall Share -- no extra Firestore
+   reads if that tab's been opened once already this session. */
+async function renderAnalyticsTab(){
+  const el = document.getElementById("mainContent");
   if (!el) return;
-  // Chairs currently running are the only ones we need to flag as busy here -- everything not
-  // in that list is free. Keeps this page from needing the full chair-configuration logic the
-  // main dashboard has.
-  const busyNames = new Set(sessionRows.map(s => s.chairName));
-  if (!busyNames.size) { el.innerHTML = `<div class="empty-note">Live status will appear here once chairs are in use.</div>`; return; }
-  const rows = [...busyNames].sort().map(name => `
-    <div class="chair-row"><span><span class="dot dot-busy"></span>${escapeHtml(name)}</span><span>Running</span></div>
-  `).join("");
-  el.innerHTML = rows || `<div class="empty-note">All units free.</div>`;
-}
-
-/* ============================== BOOK TAB ============================== */
-
-function pad2(n){ return n < 10 ? "0"+n : ""+n; }
-function todayStr(d = new Date()){ return d.getFullYear() + "-" + pad2(d.getMonth()+1) + "-" + pad2(d.getDate()); }
-function timeStr(d = new Date()){ return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); }
-function fmtMoney(n){ return "\u20B9" + Math.round(n).toLocaleString("en-IN"); }
-function fmtMins(mins){
-  if (mins < 60) return `${Math.round(mins)}m`;
-  const h = Math.floor(mins/60), m = Math.round(mins%60);
-  return m ? `${h}h ${m}m` : `${h}h`;
-}
-function nextLocalId(){
-  let id = Date.now();
-  if (id <= _lastLocalId) id = _lastLocalId + 1;
-  _lastLocalId = id;
-  return id;
-}
-function firstUnitOfType(type){
-  return (liveConfig.chairOrder || []).find(c => unitTypeOf(c) === type);
-}
-function unitColorClass(unitType){
-  if (unitType === "Leg") return "leg";
-  if (unitType === "Advanced Leg") return "advleg";
-  if (unitType === "Chair") return "chair";
-  return "other"; // any future unit type beyond the original three
-}
-function activeUnitTypes(){
-  const disabled = liveConfig.disabledUnits || [];
-  return [...new Set((liveConfig.chairOrder || []).filter(c => !disabled.includes(c)).map(unitTypeOf))];
-}
-function tokenTypeLabel(unitType){
-  if (unitType === "Leg") return "Foot";
-  if (unitType === "Advanced Leg") return "Adv. Foot";
-  if (unitType === "Chair") return "Body";
-  return unitType; // any future unit type -- use its own name rather than defaulting to "Body"
-}
-// Same representative-pricing approach as the main dashboard's queueQuickOptions(): each unit
-// type shares one pricing structure, so pull it from the first unit of that type.
-function bookingOptionsFor(unitType){
-  const ref = firstUnitOfType(unitType);
-  const pkgs = (ref && liveConfig.packages[ref]) || [];
-  return pkgs.map(p => ({ unitType, packageLabel: p.label, durationMin: p.min, price: p.price }))
-    .sort((a,b) => a.durationMin - b.durationMin);
-}
-// A rough, mobile-friendly estimate -- deliberately simpler than the main dashboard's pause-aware
-// calculation (this page doesn't track pauses at all); good enough for "about how long" at a glance.
-function estimatedWaitSlots(unitType){
-  const disabled = liveConfig.disabledUnits || [];
-  const unitsOfType = (liveConfig.chairOrder || []).filter(c => !disabled.includes(c) && unitTypeOf(c) === unitType);
-  if (!unitsOfType.length) return null;
-  const now = Date.now();
-  let freeAt = unitsOfType.map(c => {
-    const running = sessionRows.find(s => s.chairName === c);
-    if (running) return (running.startTs || now) + (running.durationMin || 0) * 60000;
-    return now;
-  });
-  const queued = queueRows.filter(q => q.unitType === unitType);
-  queued.forEach(q => {
-    let minIdx = 0;
-    for (let i = 1; i < freeAt.length; i++) if (freeAt[i] < freeAt[minIdx]) minIdx = i;
-    freeAt[minIdx] = Math.max(freeAt[minIdx], now) + (q.durationMin || 0) * 60000;
-  });
-  // Same +3 min real-world buffer used on the main dashboard and on printed tokens (walking to
-  // the chair, settling in) -- keeps this page's estimates consistent with what actually prints.
-  const WAIT_ESTIMATE_BUFFER_MS = 3 * 60000;
-  return freeAt.slice().sort((a,b) => a - b).map(t => t + WAIT_ESTIMATE_BUFFER_MS);
-}
-
-function renderBookTab(){
-  const el = document.getElementById("bookContent");
-  if (!el) return;
-  const types = activeUnitTypes();
-  const labelFor = (t) => t === "Advanced Leg" ? "Adv. Leg" : t;
-  const ordinal = ["1st", "2nd", "3rd"];
-  const waitRows = types.map(type => {
-    const slots = estimatedWaitSlots(type);
-    if (!slots) return "";
-    return slots.slice(0, 3).map((slotTs, i) => {
-      const waitMin = Math.max(0, Math.round((slotTs - Date.now()) / 60000));
-      const label = waitMin <= 0
-        ? `<span style="color:#7ee08c;">Free now</span>`
-        : `~${waitMin}m (${new Date(slotTs).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})})`;
-      return `<div class="wait-row"><span>${escapeHtml(labelFor(type))}${slots.length > 1 ? ` \u2014 ${ordinal[i]}` : ""}</span><span>${label}</span></div>`;
-    }).join("");
-  }).join("");
-
-  const rowFor = (unitType) => {
-    const opts = bookingOptionsFor(unitType);
-    if (!opts.length) return "";
-    return `<div class="unit-group">
-      <div class="unit-group-label ${unitColorClass(unitType)}">${escapeHtml(labelFor(unitType))}</div>
-      <div class="pkg-row">${opts.map((o,i) => `
-        <button class="pkg-btn ${unitColorClass(unitType)}" data-unit="${escapeHtml(unitType)}" data-idx="${i}">+ ${escapeHtml(o.packageLabel)} ${fmtMoney(o.price)}</button>`).join("")}
-      </div>
-    </div>`;
-  };
-
-  const cartHtml = cart.length ? cart.map((c,i) => `
-    <div class="cart-line"><span>${escapeHtml(c.unitType)} ${escapeHtml(c.packageLabel)} \u2014 ${fmtMoney(c.price)}</span><button data-remove="${i}">Remove</button></div>
-  `).join("") : `<div class="empty-note">No items added yet.</div>`;
-
-  const total = cart.reduce((a,c) => a + c.price, 0);
-  const methods = (liveConfig.paymentMethods || []).filter(m => m.enabled);
-
-  el.innerHTML = `
-    <div class="section-title">Estimated Wait Time</div>
-    ${waitRows || `<div class="empty-note">No units configured yet.</div>`}
-    <div class="section-title">Booking</div>
-    ${types.map(rowFor).join("")}
-    <p class="assign-note">Works whether or not a unit is free right now \u2014 it becomes a token in the Waiting Queue, assign it from the Assign tab once ready.</p>
-    <div class="section-title">Current Order</div>
-    <div class="field"><label>Customer name (optional)</label><input id="bookCustomerName" value="${escapeHtml(cartCustomerName)}"></div>
-    <div class="field"><label>Mobile number (optional)</label><input id="bookCustomerPhone" inputmode="numeric" value="${escapeHtml(cartCustomerPhone)}"></div>
-    ${cartHtml}
-    <div class="cart-line" style="font-weight:700; border-bottom:none;"><span>Total</span><span>${fmtMoney(total)}</span></div>
-    <div class="pay-row">${methods.map(m => `<button class="pay-btn ${m.id === cartPayment ? "selected" : ""}" data-method="${escapeHtml(m.id)}">${escapeHtml(m.label)}</button>`).join("")}</div>
-    <button class="btn" id="bookCheckoutBtn" ${cart.length ? "" : "disabled"}>Checkout</button>
-  `;
-
-  document.getElementById("bookCustomerName").addEventListener("input", e => { cartCustomerName = e.target.value; });
-  document.getElementById("bookCustomerPhone").addEventListener("input", e => { cartCustomerPhone = e.target.value; });
-  el.querySelectorAll(".pkg-btn").forEach(b => b.addEventListener("click", () => {
-    const opt = bookingOptionsFor(b.dataset.unit)[parseInt(b.dataset.idx, 10)];
-    cart.push(opt);
-    renderBookTab();
-  }));
-  el.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", () => {
-    cart.splice(parseInt(b.dataset.remove, 10), 1);
-    renderBookTab();
-  }));
-  el.querySelectorAll(".pay-btn").forEach(b => b.addEventListener("click", () => { cartPayment = b.dataset.method; renderBookTab(); }));
-  document.getElementById("bookCheckoutBtn").addEventListener("click", checkoutMobile);
-}
-
-// Ported from the main dashboard's checkoutCart(), same atomic guarantee: reserving the invoice
-// number and saving the sale happen as ONE indivisible transaction. If anything interrupts it --
-// a crash, the connection dying mid-flight -- Firestore guarantees NONE of it takes effect, not
-// even the counter advancing. Falls back to a local-safe path if genuinely offline, same as the
-// main dashboard, so booking still works through an outage.
-async function checkoutMobile(){
-  if (checkoutInFlight || !cart.length) return;
-  checkoutInFlight = true;
-  const btn = document.getElementById("bookCheckoutBtn");
-  if (btn) { btn.disabled = true; btn.textContent = "Processing\u2026"; }
-  const now = new Date();
-  const cartSnapshot = cart.slice();
-  const method = cartPayment;
-  const custName = cartCustomerName || null, custPhone = cartCustomerPhone || null;
-
-  try {
-    const itemPlans = cartSnapshot.map(item => ({
-      item, sessionId: nextLocalId(), queueId: nextLocalId() + Math.floor(Math.random()*1000)
-    }));
-
-    const d = new Date();
-    const yearLabel = "FY" + String(d.getFullYear()).slice(-2);
-    const mm = pad2(d.getMonth()+1), dd = pad2(d.getDate());
-    const dayKey = `${yearLabel}-${mm}-${dd}`;
-    const invoicePrefixToday = `${liveConfig.invoicePrefix}-${dayKey}-`;
-    const counterRef = fsDb.collection("meta").doc("invoiceCounters");
-
-    // Self-heal floor: a live in-memory cache of every session isn't available on this lighter
-    // page, so this asks Firestore directly for today's real invoice numbers instead -- same
-    // principle as the main dashboard's highestInvoiceSeqUsedToday(), just fetched fresh here
-    // rather than kept resident in memory.
-    async function selfHealFloor(){
-      try {
-        const snap = await fsDb.collection("sessions").where("date", "==", todayStr(now)).get();
-        let max = 0;
-        snap.forEach(doc => {
-          const inv = doc.data().invoiceNo;
-          if (inv && inv.startsWith(invoicePrefixToday)) {
-            const seq = parseInt(inv.slice(invoicePrefixToday.length), 10);
-            if (!isNaN(seq) && seq > max) max = seq;
-          }
-        });
-        return max;
-      } catch (e) { return 0; }
-    }
-
-    const buildRecordsFor = (plan, thisInvoiceNo) => {
-      const { item, sessionId, queueId } = plan;
-      const session = {
-        invoiceNo: thisInvoiceNo, date: todayStr(now), time: timeStr(now),
-        chairName: null, unitType: item.unitType, packageLabel: item.packageLabel, durationMin: item.durationMin,
-        amount: item.price, method, staff: currentUser.staffId, status: "queued",
-        startTs: null, endTs: null, gst: { enabled: liveConfig.gstEnabled, rate: liveConfig.gstRate, gstin: liveConfig.gstin },
-        paymentStatus: "paid", pendingGroupId: null,
-        customerPhone: custPhone, customerName: custName,
-        tokenNum: null, queuedAt: now.getTime()
-      };
-      const queueEntry = {
-        id: queueId, unitType: item.unitType, packageLabel: item.packageLabel,
-        durationMin: item.durationMin, price: item.price, label: `${tokenTypeLabel(item.unitType)} Token`,
-        addedAt: now.getTime(), paid: true, method, invoiceNo: thisInvoiceNo,
-        gst: { enabled: liveConfig.gstEnabled, rate: liveConfig.gstRate, gstin: liveConfig.gstin },
-        customerName: custName, customerPhone: custPhone, sessionId
-      };
-      return { session, queueEntry };
-    };
-
-    const commitAtomically = async () => {
-      const floor = await selfHealFloor();
-      return await fsDb.runTransaction(async (tx) => {
-        const snap = await tx.get(counterRef);
-        const data = snap.exists ? snap.data() : {};
-        const seq = Math.max(data[dayKey] || 0, floor) + 1;
-        const thisInvoiceNo = `${liveConfig.invoicePrefix}-${yearLabel}-${mm}-${dd}-${String(seq).padStart(3,"0")}`;
-        tx.set(counterRef, { [dayKey]: seq }, { merge: true });
-        for (const plan of itemPlans) {
-          const { session, queueEntry } = buildRecordsFor(plan, thisInvoiceNo);
-          tx.set(fsDb.collection("sessions").doc(String(plan.sessionId)), session);
-          tx.set(fsDb.collection("waitingQueue").doc(String(plan.queueId)), queueEntry);
-        }
-        return thisInvoiceNo;
-      });
-    };
-
-    let invoiceNo, raceSettled = false;
-    try {
-      const attempt = commitAtomically();
-      attempt.then((lateInvoiceNo) => {
-        if (raceSettled) console.warn(`IMPORTANT: the original booking transaction succeeded AFTER the timeout already triggered the offline fallback, creating invoice ${lateInvoiceNo} -- this sale may now be recorded TWICE. Check Receipts and use Fix a Duplicate Invoice Number if so.`);
-      }, () => {});
-      invoiceNo = await Promise.race([
-        attempt,
-        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 20000))
-      ]);
-      raceSettled = true;
-    } catch (e) {
-      raceSettled = true;
-      console.warn("Booking transaction failed/timed out -- using offline-safe fallback:", e.message);
-      const floor = await selfHealFloor();
-      const seq = floor + 1; // best-effort local continuation -- no CONFIG.invoiceCounters cache on this lighter page
-      invoiceNo = `${liveConfig.invoicePrefix}-${yearLabel}-${mm}-${dd}-${String(seq).padStart(3,"0")}`;
-      for (const plan of itemPlans) {
-        const { session, queueEntry } = buildRecordsFor(plan, invoiceNo);
-        fsDb.collection("sessions").doc(String(plan.sessionId)).set(session).catch(err => console.warn("session save failed:", err.message));
-        fsDb.collection("waitingQueue").doc(String(plan.queueId)).set(queueEntry).catch(err => console.warn("queue save failed:", err.message));
-      }
-    }
-
-    alert(`Booked \u2014 Invoice ${invoiceNo}. Assign it to a chair from the Assign tab once ready.`);
-    cart = [];
-    cartCustomerName = ""; cartCustomerPhone = "";
-    cartPayment = liveConfig.defaultPaymentMethod || "UPI";
-    renderBookTab();
-  } catch (e) {
-    alert("Something went wrong: " + e.message + "\n\nCheck Receipts on the main dashboard before trying again, to avoid booking twice.");
-  } finally {
-    checkoutInFlight = false;
-    if (btn) { btn.disabled = false; btn.textContent = "Checkout"; }
+  el.classList.remove("op-grid");
+  el.innerHTML = `<p class="panel-help">Loading\u2026</p>`;
+  if (!mallShareLoaded) {
+    try { await loadMallShareData(); }
+    catch (e) { el.innerHTML = `<p class="panel-help">Couldn't load Analytics data: ${escapeHtml(e.message)}</p>`; return; }
   }
+  const todayS = todayStr();
+  const dates = mallShareSessions.map(s => s.date).sort();
+  const earliest = dates[0] || todayS;
+  const now = new Date();
+  const weekStart = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()));
+  const monthStart = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1));
+
+  const revenuePanel = isVisible("analytics.revenue") ? `
+    <div class="panel">
+      <div class="panel-title">Revenue</div>
+      <table>
+        <tr><td>Today</td><td>${fmtMoney(computeMdSummary(todayS, todayS).totalRevenue)}</td></tr>
+        <tr><td>This Week</td><td>${fmtMoney(computeMdSummary(weekStart, todayS).totalRevenue)}</td></tr>
+        <tr><td>This Month</td><td>${fmtMoney(computeMdSummary(monthStart, todayS).totalRevenue)}</td></tr>
+        <tr><td><b>All-Time</b></td><td><b>${fmtMoney(computeMdSummary(earliest, todayS).totalRevenue)}</b></td></tr>
+      </table>
+    </div>` : "";
+
+  let monthlyPanel = "";
+  if (isVisible("analytics.monthlyRevenue")) {
+    const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const monthRows = MONTH_NAMES.map((name, i) => {
+      const monthFrom = `2026-${String(i+1).padStart(2,"0")}-01`;
+      const daysInMonth = new Date(2026, i+1, 0).getDate();
+      const monthTo = `2026-${String(i+1).padStart(2,"0")}-${String(daysInMonth).padStart(2,"0")}`;
+      const rev = computeMdSummary(monthFrom, monthTo).totalRevenue;
+      return { name, rev };
+    });
+    const yearTotal = monthRows.reduce((a,m) => a + m.rev, 0);
+    const maxRev = Math.max(1, ...monthRows.map(m => m.rev));
+    monthlyPanel = `
+    <div class="panel">
+      <div class="panel-title">2026 Monthly Revenue</div>
+      <table>
+        <thead><tr><th>Month</th><th>Revenue</th><th></th></tr></thead>
+        <tbody>
+          ${monthRows.map(m => `<tr><td>${m.name}</td><td>${fmtMoney(m.rev)}</td><td style="width:40%;"><div style="background:var(--copper-light);height:10px;border-radius:4px;width:${Math.round(m.rev/maxRev*100)}%;"></div></td></tr>`).join("")}
+          <tr><td><b>2026 Total</b></td><td><b>${fmtMoney(yearTotal)}</b></td><td></td></tr>
+        </tbody>
+      </table>
+    </div>`;
+  }
+
+  el.innerHTML = (revenuePanel + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
 }
 
-window.addEventListener("DOMContentLoaded", async () => {
-  const unsub = fbAuth.onAuthStateChanged(async (user) => {
-    unsub();
+window.addEventListener("DOMContentLoaded", () => {
+  fbAuth.onAuthStateChanged(async (user) => {
     if (!user) { buildLogin(); return; }
     try {
       const token = await user.getIdTokenResult(true);
       if (token.claims.active !== true || !token.claims.role) { await fbAuth.signOut(); buildLogin(); return; }
-      if (token.claims.role === "mall_admin") { await fbAuth.signOut(); buildLogin("This page is for staff use only. Please use the Mall Admin Portal instead."); return; }
-      currentUser = { uid: user.uid, role: token.claims.role, staffId: user.email.split("@")[0] };
-      buildApp();
+      currentUserRole = token.claims.role;
+      await buildApp();
     } catch (e) { await fbAuth.signOut(); buildLogin(); }
   });
+});
+
+// Phones aggressively pause a backgrounded browser tab to save battery (screen lock, switching
+// apps) -- the live Firestore connection can go quiet and not always resume cleanly on its own
+// when the tab comes back to the foreground. Forcing a network re-check the moment the page
+// becomes visible again fixes the "shows stale data until I manually reload" symptom directly,
+// instead of relying on the staleness warning alone to prompt a manual reload every time.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && fbAuth.currentUser) {
+    fsDb.disableNetwork().then(() => fsDb.enableNetwork()).catch(() => {});
+    render();
+  }
 });
 </script>
 </body>
