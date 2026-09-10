@@ -92,6 +92,14 @@
   .receipt-actions { white-space: nowrap; }
   .receipt-actions .btn-small { margin-right: 4px; margin-bottom: 4px; }
   .table-scroll { overflow-x: auto; }
+  .pkg-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .pkg-btn { padding: 10px 14px; border-radius: 8px; border: none; font-weight: 700; font-size: 0.95rem; color: #fff; cursor: pointer; }
+  .pkg-btn.unit-chair { background: var(--pine); } .pkg-btn.unit-leg { background: #2f6690; } .pkg-btn.unit-advleg { background: #7a4fa0; } .pkg-btn.unit-other { background: var(--copper); }
+  .unit-group { margin-bottom: 18px; }
+  .unit-group-label { font-weight: 700; margin-bottom: 8px; font-family: 'Fraunces', serif; }
+  .unit-group-label.unit-chair { color: var(--pine); } .unit-group-label.unit-leg { color: #2f6690; } .unit-group-label.unit-advleg { color: #7a4fa0; } .unit-group-label.unit-other { color: var(--copper); }
+  .cart-line { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 0.95rem; }
+  .cart-line button { background: transparent; border: none; color: #b3432f; font-size: 0.85rem; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -120,7 +128,7 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "" };
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false };
 let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [], queueRows = [];
 let unsubs = [];
 let currentTab = "operations";
@@ -257,7 +265,7 @@ function markActiveQuickRange(clickedBtn){
 
 function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
 function fmtMoney(n){ return "\u20B9" + Math.round(n||0).toLocaleString("en-IN"); }
-function todayStr(){ const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
+function todayStr(d){ d = d || new Date(); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); }
 function fmtMMSS(totalSec){ const s = Math.max(0, totalSec); const m = Math.floor(s/60); const r = s%60; return String(m).padStart(2,"0") + ":" + String(r).padStart(2,"0"); }
 function unitTypeOf(name){ if (liveConfig.unitTypes && liveConfig.unitTypes[name]) return liveConfig.unitTypes[name]; return name.startsWith("Leg") ? "Leg" : "Chair"; }
 function activeChairOrder(){ const disabled = liveConfig.disabledUnits || []; return (liveConfig.chairOrder || []).filter(c => !disabled.includes(c)); }
@@ -411,14 +419,12 @@ async function doLogin(){
   }
 }
 
-async function buildApp(){
-  if (!mallsList.length) await loadMallsList();
-  await loadVisibilityConfig();
-
-  // Which tabs exist at all depends on WHO logged in -- mall_admin gets the read-only reporting
-  // suite (further narrowed by mall-admin-visibility.json below); staff gets just the queue tool
-  // they need at the chair; anyone else (you, or any other internal role) gets the queue tool
-  // plus Operations/Receipts, so either the desk or a phone can be the one assigning chairs.
+// Which tabs exist at all depends on WHO logged in -- mall_admin gets the read-only reporting
+// suite (further narrowed by mall-admin-visibility.json); staff gets just the queue tool they
+// need at the chair, plus Book if that's turned on; anyone else (you, or any other internal
+// role) gets the queue tool plus Operations/Receipts, so either the desk or a phone can be the
+// one assigning chairs or taking a booking.
+function computeVisibleTabs(){
   let allTabs;
   if (currentUserRole === "mall_admin") {
     allTabs = [
@@ -429,18 +435,39 @@ async function buildApp(){
     ];
   } else if (currentUserRole === "staff") {
     allTabs = [ { id: "queue", label: "Queue" } ];
+    if (liveConfig.mobileBookingEnabled) allTabs.push({ id: "book", label: "Book" });
   } else {
-    allTabs = [
-      { id: "queue", label: "Queue" },
-      { id: "operations", label: "Operations" },
-      { id: "receipts", label: "Receipts" }
-    ];
+    allTabs = [ { id: "queue", label: "Queue" } ];
+    if (liveConfig.mobileBookingEnabled) allTabs.push({ id: "book", label: "Book" });
+    allTabs.push({ id: "operations", label: "Operations" }, { id: "receipts", label: "Receipts" });
   }
   // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
   // control what Mall Admin sees; it was never meant to also gate your own or staff's tools.
   const visibleTabs = currentUserRole === "mall_admin" ? allTabs.filter(t => isVisible(t.id + ".enabled")) : allTabs;
+  return { allTabs, visibleTabs };
+}
+
+// Rebuilds just the tab bar (and fixes up currentTab if it just got hidden) -- called both at
+// initial login and again whenever meta/config changes live, since mobileBookingEnabled can be
+// flipped at any time and should show/hide the Book tab immediately, on every phone, no reload.
+function refreshTabBar(){
+  const tabsEl = document.getElementById("tabsBar");
+  if (!tabsEl) return; // buildApp() hasn't run yet -- nothing to refresh
+  const { allTabs, visibleTabs } = computeVisibleTabs();
   if (!visibleTabs.some(t => t.id === currentTab)) currentTab = (visibleTabs[0] || allTabs[0]).id;
-  const tabsHtml = visibleTabs.map(t => `<div class="tab${t.id === currentTab ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("");
+  tabsEl.innerHTML = visibleTabs.map(t => `<div class="tab${t.id === currentTab ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("");
+  tabsEl.querySelectorAll(".tab").forEach(tabEl => {
+    tabEl.addEventListener("click", () => {
+      currentTab = tabEl.dataset.tab;
+      tabsEl.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tabEl));
+      render();
+    });
+  });
+}
+
+async function buildApp(){
+  if (!mallsList.length) await loadMallsList();
+  await loadVisibilityConfig();
 
   document.getElementById("root").innerHTML = `
     <div class="topbar">
@@ -462,16 +489,10 @@ async function buildApp(){
         </div>
       </div>
     </div>
-    <div class="tabs">${tabsHtml}</div>
+    <div class="tabs" id="tabsBar"></div>
     <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
 
-  document.querySelectorAll(".tab").forEach(tabEl => {
-    tabEl.addEventListener("click", () => {
-      currentTab = tabEl.dataset.tab;
-      document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tabEl));
-      render();
-    });
-  });
+  refreshTabBar();
 
   if (mallsList.length) {
     selectedMallId = selectedMallId || mallsList[0].id;
@@ -495,9 +516,10 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "" };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
+    refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
     requestRender();
   }));
   unsubs.push(fsDb.collection("sessions").where("date", "==", today).onSnapshot(snap => {
@@ -557,6 +579,7 @@ function render(){  if (currentTab === "receipts") { renderReceiptsTab(); return
     renderQueueTab();
     return;
   }
+  if (currentTab === "book") { renderBookTab(); return; }
   renderOperationsTab();
 }
 
@@ -1586,6 +1609,255 @@ async function renderAnalyticsTab(){
   }
 
   el.innerHTML = (revenuePanel + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
+}
+
+/* ========================= BOOK TAB (staff/admin, when mobileBookingEnabled) =========================
+   Ported from the other-chat version of the standalone Staff Queue View file, adapted to this
+   file's theme, helpers (unitTypeOf, activeChairOrder, tokenTypeLabel, fmtMoney, todayStr,
+   timeStr already exist here -- reused as-is, not duplicated), and role/tab structure. The
+   checkout logic itself (atomic invoice-number transaction, self-heal floor, offline fallback)
+   is kept exactly as ported -- it mirrors the main dashboard's own checkoutCart() so invoice
+   numbering stays consistent with what the desk generates. */
+let cart = [];
+let cartPayment = "";
+let cartCustomerName = "", cartCustomerPhone = "";
+let _lastLocalId = 0;
+let checkoutInFlight = false;
+
+function fmtMins(mins){
+  if (mins < 60) return `${Math.round(mins)}m`;
+  const h = Math.floor(mins/60), m = Math.round(mins%60);
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+function nextLocalId(){
+  let id = Date.now();
+  if (id <= _lastLocalId) id = _lastLocalId + 1;
+  _lastLocalId = id;
+  return id;
+}
+function firstUnitOfType(type){ return activeChairOrder().find(c => unitTypeOf(c) === type); }
+function unitColorClass(unitType){
+  if (unitType === "Leg") return "unit-leg";
+  if (unitType === "Advanced Leg") return "unit-advleg";
+  if (unitType === "Chair") return "unit-chair";
+  return "unit-other";
+}
+function activeUnitTypes(){ return [...new Set(activeChairOrder().map(unitTypeOf))]; }
+// Same representative-pricing approach as the main dashboard: each unit type shares one pricing
+// structure, so pull it from the first unit of that type.
+function bookingOptionsFor(unitType){
+  const ref = firstUnitOfType(unitType);
+  const pkgs = (ref && liveConfig.packages[ref]) || [];
+  return pkgs.map(p => ({ unitType, packageLabel: p.label, durationMin: p.min, price: p.price }))
+    .sort((a,b) => a.durationMin - b.durationMin);
+}
+// Shows the 1st/2nd/3rd upcoming free slot per unit type (not just the next one), so a group
+// asking together gets an exact answer instead of a guess. Deliberately simpler than the main
+// dashboard's pause-aware calculation -- good enough for "about how long" at a glance from a
+// phone. Same +3 min real-world buffer used on printed tokens (walking to the chair, settling
+// in), so this never disagrees with what actually prints.
+function estimatedWaitSlots(unitType){
+  const unitsOfType = activeChairOrder().filter(c => unitTypeOf(c) === unitType);
+  if (!unitsOfType.length) return null;
+  const now = Date.now();
+  let freeAt = unitsOfType.map(c => {
+    const running = getRunningSession(c);
+    return running ? sessionEffectiveEndTs(running) : now;
+  });
+  const queued = queueRows.filter(q => q.unitType === unitType);
+  queued.forEach(q => {
+    let minIdx = 0;
+    for (let i = 1; i < freeAt.length; i++) if (freeAt[i] < freeAt[minIdx]) minIdx = i;
+    freeAt[minIdx] = Math.max(freeAt[minIdx], now) + (q.durationMin || 0) * 60000;
+  });
+  const WAIT_ESTIMATE_BUFFER_MS = 3 * 60000;
+  return freeAt.slice().sort((a,b) => a - b).map(t => t + WAIT_ESTIMATE_BUFFER_MS);
+}
+
+function renderBookTab(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  el.classList.remove("op-grid");
+  if (!cartPayment) cartPayment = liveConfig.defaultPaymentMethod || "UPI";
+  const types = activeUnitTypes();
+  const labelFor = (t) => t === "Advanced Leg" ? "Adv. Leg" : t;
+  const ordinal = ["1st", "2nd", "3rd"];
+
+  const waitRows = types.map(type => {
+    const slots = estimatedWaitSlots(type);
+    if (!slots) return "";
+    return slots.slice(0, 3).map((slotTs, i) => {
+      const waitMin = Math.max(0, Math.round((slotTs - Date.now()) / 60000));
+      const label = waitMin <= 0 ? `Free now` : `~${waitMin}m (${new Date(slotTs).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})})`;
+      return `<tr><td>${escapeHtml(labelFor(type))}${slots.length > 1 ? ` \u2014 ${ordinal[i]}` : ""}</td><td>${label}</td></tr>`;
+    }).join("");
+  }).join("");
+
+  const rowFor = (unitType) => {
+    const opts = bookingOptionsFor(unitType);
+    if (!opts.length) return "";
+    return `<div class="unit-group">
+      <div class="unit-group-label ${unitColorClass(unitType)}">${escapeHtml(labelFor(unitType))}</div>
+      <div class="pkg-row">${opts.map((o,i) => `
+        <button class="pkg-btn ${unitColorClass(unitType)}" data-unit="${escapeHtml(unitType)}" data-idx="${i}">+ ${escapeHtml(o.packageLabel)} ${fmtMoney(o.price)}</button>`).join("")}
+      </div>
+    </div>`;
+  };
+
+  const cartHtml = cart.length ? cart.map((c,i) => `
+    <div class="cart-line"><span>${escapeHtml(c.unitType)} ${escapeHtml(c.packageLabel)} \u2014 ${fmtMoney(c.price)}</span><button data-remove="${i}">Remove</button></div>
+  `).join("") : `<p class="panel-help">No items added yet.</p>`;
+
+  const total = cart.reduce((a,c) => a + c.price, 0);
+  const methods = (liveConfig.paymentMethods || []).filter(m => m.enabled);
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Estimated Wait Time</div>
+      ${waitRows ? `<table><thead><tr><th>Unit</th><th>Wait</th></tr></thead><tbody>${waitRows}</tbody></table>` : `<p class="panel-help">No units configured yet.</p>`}
+    </div>
+    <div class="panel">
+      <div class="panel-title">New Booking</div>
+      <p class="panel-help">Works whether or not a unit is free right now \u2014 it becomes a token in the Waiting Queue; assign it from the Queue tab once ready.</p>
+      ${types.map(rowFor).join("")}
+      <div class="btn-group">
+        <div class="filter-field">Customer name (optional)<input type="text" id="bookCustomerName" value="${escapeHtml(cartCustomerName)}"></div>
+        <div class="filter-field">Mobile number (optional)<input type="text" inputmode="numeric" id="bookCustomerPhone" value="${escapeHtml(cartCustomerPhone)}"></div>
+      </div>
+      ${cartHtml}
+      <div class="cart-line" style="font-weight:700; border-bottom:none;"><span>Total</span><span>${fmtMoney(total)}</span></div>
+      <div class="btn-group">${methods.map(m => `<button class="btn-outline btn-small qr-btn pay-btn${m.id === cartPayment ? " qr-active" : ""}" data-method="${escapeHtml(m.id)}">${escapeHtml(m.label)}</button>`).join("")}</div>
+      <button class="btn btn-primary" id="bookCheckoutBtn" ${cart.length ? "" : "disabled"} style="width:100%;">Checkout</button>
+    </div>
+  `;
+
+  document.getElementById("bookCustomerName").addEventListener("input", e => { cartCustomerName = e.target.value; });
+  document.getElementById("bookCustomerPhone").addEventListener("input", e => { cartCustomerPhone = e.target.value; });
+  el.querySelectorAll(".pkg-btn").forEach(b => b.addEventListener("click", () => {
+    const opt = bookingOptionsFor(b.dataset.unit)[parseInt(b.dataset.idx, 10)];
+    cart.push(opt);
+    renderBookTab();
+  }));
+  el.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", () => {
+    cart.splice(parseInt(b.dataset.remove, 10), 1);
+    renderBookTab();
+  }));
+  el.querySelectorAll(".pay-btn").forEach(b => b.addEventListener("click", (e) => { cartPayment = b.dataset.method; markActiveQuickRange(e.target); }));
+  document.getElementById("bookCheckoutBtn").addEventListener("click", (e) => withBusyButton(e.target, checkoutMobile));
+}
+
+// Same atomic guarantee as the main dashboard's checkoutCart(): reserving the invoice number and
+// saving the sale happen as ONE indivisible Firestore transaction. If anything interrupts it --
+// a crash, the connection dying mid-flight -- Firestore guarantees NONE of it takes effect, not
+// even the counter advancing. Falls back to a local-safe path if genuinely offline.
+async function checkoutMobile(){
+  if (checkoutInFlight || !cart.length) return;
+  checkoutInFlight = true;
+  const now = new Date();
+  const cartSnapshot = cart.slice();
+  const method = cartPayment;
+  const staffId = fbAuth.currentUser.email.split("@")[0];
+  const custName = cartCustomerName || null, custPhone = cartCustomerPhone || null;
+
+  try {
+    const itemPlans = cartSnapshot.map(item => ({
+      item, sessionId: nextLocalId(), queueId: nextLocalId() + Math.floor(Math.random()*1000)
+    }));
+
+    const d = new Date();
+    const yearLabel = "FY" + String(d.getFullYear()).slice(-2);
+    const mm = String(d.getMonth()+1).padStart(2,"0"), dd = String(d.getDate()).padStart(2,"0");
+    const dayKey = `${yearLabel}-${mm}-${dd}`;
+    const invoicePrefixToday = `${liveConfig.invoicePrefix}-${dayKey}-`;
+    const counterRef = fsDb.collection("meta").doc("invoiceCounters");
+
+    async function selfHealFloor(){
+      try {
+        const snap = await fsDb.collection("sessions").where("date", "==", todayStr(now)).get();
+        let max = 0;
+        snap.forEach(doc => {
+          const inv = doc.data().invoiceNo;
+          if (inv && inv.startsWith(invoicePrefixToday)) {
+            const seq = parseInt(inv.slice(invoicePrefixToday.length), 10);
+            if (!isNaN(seq) && seq > max) max = seq;
+          }
+        });
+        return max;
+      } catch (e) { return 0; }
+    }
+
+    const buildRecordsFor = (plan, thisInvoiceNo) => {
+      const { item, sessionId, queueId } = plan;
+      const session = {
+        invoiceNo: thisInvoiceNo, date: todayStr(now), time: timeStr(now),
+        chairName: null, unitType: item.unitType, packageLabel: item.packageLabel, durationMin: item.durationMin,
+        amount: item.price, method, staff: staffId, status: "queued",
+        startTs: null, endTs: null, gst: { enabled: liveConfig.gstEnabled, rate: liveConfig.gstRate, gstin: liveConfig.gstin },
+        paymentStatus: "paid", pendingGroupId: null,
+        customerPhone: custPhone, customerName: custName,
+        tokenNum: null, queuedAt: now.getTime()
+      };
+      const queueEntry = {
+        id: queueId, unitType: item.unitType, packageLabel: item.packageLabel,
+        durationMin: item.durationMin, price: item.price, label: `${tokenTypeLabel(item.unitType)} Token`,
+        addedAt: now.getTime(), paid: true, method, invoiceNo: thisInvoiceNo,
+        gst: { enabled: liveConfig.gstEnabled, rate: liveConfig.gstRate, gstin: liveConfig.gstin },
+        customerName: custName, customerPhone: custPhone, sessionId
+      };
+      return { session, queueEntry };
+    };
+
+    const commitAtomically = async () => {
+      const floor = await selfHealFloor();
+      return await fsDb.runTransaction(async (tx) => {
+        const snap = await tx.get(counterRef);
+        const data = snap.exists ? snap.data() : {};
+        const seq = Math.max(data[dayKey] || 0, floor) + 1;
+        const thisInvoiceNo = `${liveConfig.invoicePrefix}-${yearLabel}-${mm}-${dd}-${String(seq).padStart(3,"0")}`;
+        tx.set(counterRef, { [dayKey]: seq }, { merge: true });
+        for (const plan of itemPlans) {
+          const { session, queueEntry } = buildRecordsFor(plan, thisInvoiceNo);
+          tx.set(fsDb.collection("sessions").doc(String(plan.sessionId)), session);
+          tx.set(fsDb.collection("waitingQueue").doc(String(plan.queueId)), queueEntry);
+        }
+        return thisInvoiceNo;
+      });
+    };
+
+    let invoiceNo, raceSettled = false;
+    try {
+      const attempt = commitAtomically();
+      attempt.then((lateInvoiceNo) => {
+        if (raceSettled) console.warn(`IMPORTANT: the original booking transaction succeeded AFTER the timeout already triggered the offline fallback, creating invoice ${lateInvoiceNo} -- this sale may now be recorded TWICE. Check Receipts and use Fix a Duplicate Invoice Number if so.`);
+      }, () => {});
+      invoiceNo = await Promise.race([
+        attempt,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 20000))
+      ]);
+      raceSettled = true;
+    } catch (e) {
+      raceSettled = true;
+      console.warn("Booking transaction failed/timed out -- using offline-safe fallback:", e.message);
+      const floor = await selfHealFloor();
+      const seq = floor + 1;
+      invoiceNo = `${liveConfig.invoicePrefix}-${yearLabel}-${mm}-${dd}-${String(seq).padStart(3,"0")}`;
+      for (const plan of itemPlans) {
+        const { session, queueEntry } = buildRecordsFor(plan, invoiceNo);
+        fsDb.collection("sessions").doc(String(plan.sessionId)).set(session).catch(err => console.warn("session save failed:", err.message));
+        fsDb.collection("waitingQueue").doc(String(plan.queueId)).set(queueEntry).catch(err => console.warn("queue save failed:", err.message));
+      }
+    }
+
+    alert(`Booked \u2014 Invoice ${invoiceNo}. Assign it to a chair from the Queue tab once ready.`);
+    cart = [];
+    cartCustomerName = ""; cartCustomerPhone = "";
+    cartPayment = liveConfig.defaultPaymentMethod || "UPI";
+    renderBookTab();
+  } catch (e) {
+    alert("Something went wrong: " + e.message + "\n\nCheck Receipts on the main dashboard before trying again, to avoid booking twice.");
+  } finally {
+    checkoutInFlight = false;
+  }
 }
 
 window.addEventListener("DOMContentLoaded", () => {
