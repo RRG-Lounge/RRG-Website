@@ -1221,8 +1221,7 @@ function exportRevenueShareStatementPDF(rec){
     body: [
       [fin.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", fmtMoneyPDF(fin.finalTotalRevenue)],
       ...(fin.gstRegistered ? [[`GST (${fin.gstRate}%)`, fmtMoneyPDF(fin.gstAmount)], ["Base Revenue (excl. GST)", fmtMoneyPDF(fin.baseRevenue)]] : []),
-      [`Mall Share (${rec.mdSharePercent}%${fin.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(fin.finalMdShare)],
-      [`RRG Lounge Share (${100-rec.mdSharePercent}%${fin.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(fin.finalOwnerShare)]
+      [`Mall Share (${rec.mdSharePercent}%${fin.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(fin.finalMdShare)]
     ],
     styles: { fontSize: 11, fontStyle: "bold" }, theme: "plain"
   });
@@ -1241,8 +1240,7 @@ function exportRevenueShareStatementExcel(rec){
     [],
     [fin.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", fin.finalTotalRevenue],
     ...(fin.gstRegistered ? [[`GST (${fin.gstRate}%)`, fin.gstAmount], ["Base Revenue (excl. GST)", fin.baseRevenue]] : []),
-    [`Mall Share (${rec.mdSharePercent}%)`, fin.finalMdShare],
-    [`RRG Lounge Share (${100-rec.mdSharePercent}%)`, fin.finalOwnerShare]
+    [`Mall Share (${rec.mdSharePercent}%)`, fin.finalMdShare]
   ], { origin: -1 });
   XLSX.utils.book_append_sheet(wb, ws, "Revenue Share");
   XLSX.writeFile(wb, `Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}.xlsx`);
