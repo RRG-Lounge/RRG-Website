@@ -1202,18 +1202,13 @@ function exportRevenueShareStatementPDF(rec){
   if (liveConfig.mdName) { doc.text(`Prepared for: ${pdfSafeText(liveConfig.mdName)}`, 14, y); y += 5; }
   y += 3;
 
+  // Deliberately just the summary figures -- no package-by-package or payment-method breakdown.
+  // Internal reconciliation adjustments (typo fixes, cancellations, etc.) get folded into these
+  // totals the same as everywhere else in this app, but never shown as their own line item here,
+  // since a mall-facing statement isn't the place to explain an internal correction by name.
   doc.autoTable({ startY: y, body: [["Units Used", String(rec.unitsUsed), "Total Sessions", String(rec.totalSessions)]], styles: { fontSize: 10 }, columnStyles: { 0: { fontStyle: "bold" }, 2: { fontStyle: "bold" } }, theme: "plain" });
-  doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, head: [["Package", "Sessions", "Revenue"]], body: (rec.pkgOrder||[]).map(k => [pdfSafeText(k), rec.pkgAgg[k].count, fmtMoneyPDF(rec.pkgAgg[k].revenue)]), styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] } });
 
   const fin = paymentMethodFinal(rec);
-  doc.autoTable({
-    startY: doc.lastAutoTable.finalY + 3,
-    head: [["Payment Method", "Amount"]],
-    body: ["UPI","Cash","Card","Pending"].map(m => [m, fmtMoneyPDF(rec.payAgg[m]||0)]),
-    foot: [["Total", fmtMoneyPDF(fin.finalTotalRevenue)]],
-    styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }, footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" }
-  });
-
   doc.autoTable({
     startY: doc.lastAutoTable.finalY + 6,
     body: [
@@ -1231,10 +1226,13 @@ function exportRevenueShareStatementExcel(rec){
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([
     [`Revenue Share Statement \u2014 ${liveConfig.businessName}`],
-    [`Period: ${rec.periodFrom} to ${rec.periodTo}`], []
+    [`Period: ${rec.periodFrom} to ${rec.periodTo}`], [],
+    ["Units Used", rec.unitsUsed, "Total Sessions", rec.totalSessions], [],
+    [fin.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", fin.finalTotalRevenue],
+    ...(fin.gstRegistered ? [[`GST (${fin.gstRate}%)`, fin.gstAmount], ["Base Revenue (excl. GST)", fin.baseRevenue]] : []),
+    [`Mall Share (${rec.mdSharePercent}%)`, fin.finalMdShare],
+    [`RRG Lounge Share (${100-rec.mdSharePercent}%)`, fin.finalOwnerShare]
   ]);
-  XLSX.utils.sheet_add_json(ws, (rec.pkgOrder||[]).map(k => ({ Package: k, Sessions: rec.pkgAgg[k].count, Revenue: rec.pkgAgg[k].revenue })), { origin: -1 });
-  XLSX.utils.sheet_add_aoa(ws, [[], ["Total Revenue", fin.finalTotalRevenue], [`Mall Share (${rec.mdSharePercent}%)`, fin.finalMdShare], [`RRG Lounge Share (${100-rec.mdSharePercent}%)`, fin.finalOwnerShare]], { origin: -1 });
   XLSX.utils.book_append_sheet(wb, ws, "Revenue Share");
   XLSX.writeFile(wb, `Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}.xlsx`);
 }
@@ -1299,6 +1297,7 @@ async function renderMallShareTab(){
         <button class="btn btn-outline btn-small qr-btn" id="rsrYesterday">Yesterday</button>
         <button class="btn btn-outline btn-small qr-btn" id="rsrWeek">This Week</button>
         <button class="btn btn-outline btn-small qr-btn" id="rsrMonth">This Month</button>
+        <button class="btn btn-outline btn-small qr-btn" id="rsrLastMonth">Last Month</button>
       </div>
       <div id="rsrPreview"></div>
       <button class="btn btn-primary btn-small" id="rsrExportPdfBtn" style="margin-top:10px;">Export PDF</button>
@@ -1346,6 +1345,15 @@ async function renderMallShareTab(){
   document.getElementById("rsrYesterday").addEventListener("click", (e) => { markActiveQuickRange(e.target); const y = new Date(); y.setDate(y.getDate()-1); const ys = todayStrFromDate(y); document.getElementById("rsrFrom").value = ys; document.getElementById("rsrTo").value = ys; renderRsrPreview(); });
   document.getElementById("rsrWeek").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); const ws = new Date(now.getFullYear(), now.getMonth(), now.getDate()-now.getDay()); document.getElementById("rsrFrom").value = todayStrFromDate(ws); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
   document.getElementById("rsrMonth").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("rsrFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1)); document.getElementById("rsrTo").value = todayS; renderRsrPreview(); });
+  document.getElementById("rsrLastMonth").addEventListener("click", (e) => {
+    markActiveQuickRange(e.target);
+    const now = new Date();
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0); // day 0 of this month = last day of previous month
+    document.getElementById("rsrFrom").value = todayStrFromDate(lastMonthStart);
+    document.getElementById("rsrTo").value = todayStrFromDate(lastMonthEnd);
+    renderRsrPreview();
+  });
   document.getElementById("rsrExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementPDF(buildAdhocRec(from, to)); }));
   document.getElementById("rsrExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementExcel(buildAdhocRec(from, to)); }));
 
