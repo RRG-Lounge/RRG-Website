@@ -1202,13 +1202,21 @@ function exportRevenueShareStatementPDF(rec){
   if (liveConfig.mdName) { doc.text(`Prepared for: ${pdfSafeText(liveConfig.mdName)}`, 14, y); y += 5; }
   y += 3;
 
-  // Deliberately just the summary figures -- no package-by-package or payment-method breakdown.
-  // Internal reconciliation adjustments (typo fixes, cancellations, etc.) get folded into these
-  // totals the same as everywhere else in this app, but never shown as their own line item here,
-  // since a mall-facing statement isn't the place to explain an internal correction by name.
+  // Deliberately no package-by-package breakdown -- that's specifically where internal
+  // reconciliation adjustments (typo fixes, cancellations, etc.) leaked through by their own raw
+  // label. Payment method breakdown is fine to keep; every figure below already has any
+  // adjustments folded in, same as everywhere else in this app.
   doc.autoTable({ startY: y, body: [["Units Used", String(rec.unitsUsed), "Total Sessions", String(rec.totalSessions)]], styles: { fontSize: 10 }, columnStyles: { 0: { fontStyle: "bold" }, 2: { fontStyle: "bold" } }, theme: "plain" });
 
   const fin = paymentMethodFinal(rec);
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 3,
+    head: [["Payment Method", "Amount"]],
+    body: ["UPI","Cash","Card","Pending"].map(m => [m, fmtMoneyPDF(rec.payAgg[m]||0)]),
+    foot: [["Total", fmtMoneyPDF(fin.finalTotalRevenue)]],
+    styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }, footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" }
+  });
+
   doc.autoTable({
     startY: doc.lastAutoTable.finalY + 6,
     body: [
@@ -1227,12 +1235,16 @@ function exportRevenueShareStatementExcel(rec){
   const ws = XLSX.utils.aoa_to_sheet([
     [`Revenue Share Statement \u2014 ${liveConfig.businessName}`],
     [`Period: ${rec.periodFrom} to ${rec.periodTo}`], [],
-    ["Units Used", rec.unitsUsed, "Total Sessions", rec.totalSessions], [],
+    ["Units Used", rec.unitsUsed, "Total Sessions", rec.totalSessions], []
+  ]);
+  XLSX.utils.sheet_add_json(ws, ["UPI","Cash","Card","Pending"].map(m => ({ "Payment Method": m, Amount: rec.payAgg[m]||0 })), { origin: -1 });
+  XLSX.utils.sheet_add_aoa(ws, [
+    [],
     [fin.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", fin.finalTotalRevenue],
     ...(fin.gstRegistered ? [[`GST (${fin.gstRate}%)`, fin.gstAmount], ["Base Revenue (excl. GST)", fin.baseRevenue]] : []),
     [`Mall Share (${rec.mdSharePercent}%)`, fin.finalMdShare],
     [`RRG Lounge Share (${100-rec.mdSharePercent}%)`, fin.finalOwnerShare]
-  ]);
+  ], { origin: -1 });
   XLSX.utils.book_append_sheet(wb, ws, "Revenue Share");
   XLSX.writeFile(wb, `Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}.xlsx`);
 }
