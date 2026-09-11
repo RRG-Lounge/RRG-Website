@@ -633,7 +633,6 @@ function renderOperationsTab(){
   el.innerHTML = `
     <div class="panel">
       <div class="panel-title">Live Chair Status</div>
-      <p class="panel-help">View-only.</p>
       <table><thead><tr><th>Unit</th><th>Status</th><th>Package</th><th>Remaining</th></tr></thead><tbody>${rows}</tbody></table>
     </div>
     <div class="panel">
@@ -928,7 +927,7 @@ async function renderReceiptsTab(){
   el.innerHTML = `
     <div class="panel">
       <div class="panel-title">Receipts</div>
-      <p class="panel-help">View-only \u2014 look up any past bill to reprint it or save a copy as PDF.</p>
+      <p class="panel-help">Look up any past bill to reprint it or save a copy as PDF.</p>
       <div class="btn-group">
         <div class="filter-field">Year<select id="rYear"><option value="">All</option>${yearOptions}</select></div>
         <div class="filter-field">Month<select id="rMonth"><option value="">All</option>${monthOptions}</select></div>
@@ -1301,7 +1300,7 @@ async function renderMallShareTab(){
     </div>
     <div class="panel">
       <div class="panel-title">Revenue Share Report (Daily / Any Range)</div>
-      <p class="panel-help">Generate the statement for any date or range \u2014 what you'd share with the mall on a normal day.</p>
+      <p class="panel-help">Generate the statement for any date or range.</p>
       <div class="btn-group">
         <div class="filter-field">From<input type="date" id="rsrFrom" value="${todayS}"></div>
         <div class="filter-field">To<input type="date" id="rsrTo" value="${todayS}"></div>
@@ -1317,7 +1316,7 @@ async function renderMallShareTab(){
     </div>
     <div class="panel">
       <div class="panel-title">Settlement Report</div>
-      <p class="panel-help">A clean list of settlements covering a given period \u2014 for whenever the mall asks for a settlement report.</p>
+      <p class="panel-help">A clean list of settlements covering a given period.</p>
       <div class="btn-group">
         <div class="filter-field">From<input type="date" id="srFrom" value="${todayS}"></div>
         <div class="filter-field">To<input type="date" id="srTo" value="${todayS}"></div>
