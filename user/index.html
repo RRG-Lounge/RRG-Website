@@ -1385,6 +1385,23 @@ function freeMatchingChairs(unitType){
   const busy = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
   return activeChairOrder().filter(c => unitTypeOf(c) === unitType && !busy.has(c));
 }
+// Which OTHER unit types currently offer a package of this exact duration/price -- detected from
+// actual pricing, not hardcoded to any specific duration, so it self-adjusts if packages change.
+// Lets a token be seated on either matching machine, e.g. Leg or Advanced Leg, whenever both
+// currently happen to offer the same-length package at the same price.
+function crossCompatibleTypes(unitType, durationMin, price){
+  return activeUnitTypes().filter(t => {
+    if (t === unitType) return false;
+    const ref = firstUnitOfType(t);
+    const pkgs = (ref && liveConfig.packages[ref]) || [];
+    return pkgs.some(p => p.min === durationMin && p.price === price);
+  });
+}
+function freeCrossChairs(unitType, durationMin, price){
+  const busy = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
+  const crossTypes = crossCompatibleTypes(unitType, durationMin, price);
+  return activeChairOrder().filter(c => crossTypes.includes(unitTypeOf(c)) && !busy.has(c));
+}
 
 // Best-effort "ready by" estimate for a waiting token: soonest matching chair frees up, in queue
 // order (anyone ahead in line for the SAME unit type claims the earlier slot first). This is my
@@ -1464,7 +1481,9 @@ function renderQueueTabInner(el){
   const sorted = queueRows.slice().sort((a,b) => (a.addedAt||0) - (b.addedAt||0));
   const queueHtml = !sorted.length ? `<p class="panel-help">No one waiting right now.</p>` : sorted.map(q => {
     const freeChairs = freeMatchingChairs(q.unitType);
-    const readyEstimate = freeChairs.length ? "" : formatReadyEstimate(estimateReadyTs(q));
+    const crossChairs = freeCrossChairs(q.unitType, q.durationMin, q.price);
+    const allOptions = freeChairs.map(c => ({ chair: c, cross: false })).concat(crossChairs.map(c => ({ chair: c, cross: true })));
+    const readyEstimate = allOptions.length ? "" : formatReadyEstimate(estimateReadyTs(q));
     return `
     <div class="panel" style="${q.called ? "opacity:0.6;" : ""}">
       <div style="font-weight:700; font-size:1.15rem;">${escapeHtml(q.label || "Token")}</div>
@@ -1474,10 +1493,10 @@ function renderQueueTabInner(el){
         ${q.called ? `<span class="btn-small btn-outline" style="display:inline-block;">Called</span>` : ""}
       </div>
       <button class="btn-outline btn-small call-btn" style="width:100%; padding:10px; margin-bottom:8px;" data-action="call" data-id="${q.id}">${q.called ? "Marked as Called \u2014 tap to undo" : "Mark as Called"}</button>
-      ${freeChairs.length ? `
+      ${allOptions.length ? `
         <select data-action="start" data-id="${q.id}" style="width:100%; padding:10px; border-radius:6px; border:1px solid var(--line); background:var(--cream); color:var(--ink); font-family:'Inter',sans-serif;">
           <option value="">Start on a chair\u2026</option>
-          ${freeChairs.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
+          ${allOptions.map(o => `<option value="${escapeHtml(o.chair)}">${escapeHtml(o.chair)}${o.cross ? " (other unit)" : ""}</option>`).join("")}
         </select>
       ` : `<p class="panel-help">No matching unit free right now.</p>`}
     </div>`;
@@ -1560,7 +1579,7 @@ async function startFromQueue(qid, chairName){
     // like the assign silently failed and needed doing again. A batch makes that impossible:
     // either both writes commit, or neither does.
     const batch = fsDb.batch();
-    batch.update(sessionRef, { chairName, status: "running", startTs: Date.now(), endTs: null });
+    batch.update(sessionRef, { chairName, unitType: unitTypeOf(chairName), status: "running", startTs: Date.now(), endTs: null });
     batch.delete(fsDb.collection("waitingQueue").doc(String(qid)));
     await batch.commit();
     return true;
