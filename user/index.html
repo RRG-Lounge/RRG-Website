@@ -1474,9 +1474,12 @@ function renderQueueTabInner(el){
   const syncAgoSec = lastQueueSyncTs ? Math.round((Date.now() - lastQueueSyncTs) / 1000) : null;
   const syncLabel = syncAgoSec == null ? "Not synced yet" : (syncAgoSec < 3 ? "Synced just now" : `Synced ${syncAgoSec}s ago`);
   const busyNames = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
-  const chairRows = [...busyNames].sort().map(name => `
-    <tr><td><span class="dot dot-red"></span>${escapeHtml(name)}</td><td>Running</td></tr>
-  `).join("");
+  const chairRows = [...busyNames].sort().map(name => {
+    const running = getRunningSession(name);
+    const remainSec = running ? Math.max(0, Math.round((sessionEffectiveEndTs(running) - Date.now())/1000)) : null;
+    const paused = running && !!running.pauseStartedAt;
+    return `<tr><td><span class="dot dot-red"></span>${escapeHtml(name)}</td><td>Running${paused ? " (Paused)" : ""}</td><td>${running ? running.durationMin + "m" : "-"}</td><td>${remainSec != null ? fmtMMSS(remainSec) : "-"}</td></tr>`;
+  }).join("");
 
   const sorted = queueRows.slice().sort((a,b) => (a.addedAt||0) - (b.addedAt||0));
   const queueHtml = !sorted.length ? `<p class="panel-help">No one waiting right now.</p>` : sorted.map(q => {
@@ -1511,7 +1514,7 @@ function renderQueueTabInner(el){
     </div>
     <div class="panel">
       <div class="panel-title">Chair Status</div>
-      ${busyNames.size ? `<table><thead><tr><th>Unit</th><th>Status</th></tr></thead><tbody>${chairRows}</tbody></table>` : `<p class="panel-help">All units free.</p>`}
+      ${busyNames.size ? `<table><thead><tr><th>Unit</th><th>Status</th><th>Package</th><th>Remaining</th></tr></thead><tbody>${chairRows}</tbody></table>` : `<p class="panel-help">All units free.</p>`}
     </div>
   `;
 
