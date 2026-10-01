@@ -3,7 +3,7 @@
     "enabled": true,
     "liveChairStatus": true,
     "todaysSummary": true,
-    "paymentMethodBreakdown": true
+    "paymentMethodBreakdown": false
   },
   "receipts": {
     "enabled": true
