@@ -6,5 +6,13 @@
     "description": "Our first RRG Lounge — a row of massage chairs and a foot massager set up for a quick, no-appointment reset while you're out shopping.",
     "address": "5th Floor, c/o Jeyachandran,<br>33, Medavakkam Main Road,<br>Keelkattalai, Chennai – 600117",
     "hours": "Open daily : 10:00 AM – 10:00 PM"
+  },
+  {
+    "id": "tcschrompet",
+    "status": "Now Open",
+    "name": "The Chennai Silks-Chrompet, Chennai",
+    "description": "Our second RRG Lounge — a row of massage chairs and foot massagers right inside The Chennai Silks, Chrompet, for a quick, no-appointment reset while you shop.",
+    "address": "Basement, c/o The Chennai Silks,<br>1, GST Road, Lakshman Nagar,<br>Chromepet, Chennai – 600044",
+    "hours": "Open daily : 10:00 AM – 10:00 PM"
   }
 ]
