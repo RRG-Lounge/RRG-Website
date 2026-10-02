@@ -128,7 +128,7 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false };
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [] };
 let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [], queueRows = [];
 let unsubs = [];
 let currentTab = "operations";
@@ -287,6 +287,148 @@ function latestUnacknowledgedForChair(chairName){
   if (!rows.length) return null;
   return rows.reduce((a,b) => (a.endTs > b.endTs ? a : b));
 }
+function matchesTimesUpAlertRule(unitType, durationMin){
+  return (liveConfig.timesUpAlertRules || []).some(r => r.enabled && r.unitType === unitType && r.durationMin === durationMin);
+}
+// Lets staff on mobile mark an overdue chair clear themselves, when the desk dashboard isn't open
+// to catch it (its own auto-complete timer only runs while that tab is open). Writes the exact
+// same fields the dashboard itself would -- status, endTs -- so there's nothing left inconsistent
+// whenever the dashboard does next load. Deliberately sets needsAcknowledgment to false outright
+// rather than true-then-clear: a staff member deliberately tapping this on their own phone IS the
+// human confirmation the dashboard's own alert is designed to collect, so there's no reason to
+// leave it pending (and no surprise alarm later) -- it was already handled, from here.
+// Three independent chair-management actions -- all usable regardless of whether mobile
+// Booking is turned on, and gated only by role (never for mall_admin). All three write directly
+// to the SAME session record the desk dashboard itself reads/writes, so nothing is ever left
+// inconsistent between the two.
+function canManageChairs(){ return currentUserRole !== "mall_admin"; }
+
+// Clear Timer -- works on ANY running chair, not just an overdue one (staff may need to end a
+// session early), and doubles as "Acknowledge" for a chair already flagged Time's Up (both are
+// the same underlying action: a human confirming this chair is done/physically clear).
+async function clearSessionTimer(sessionId){
+  const s = sessionsToday.find(x => x.id === sessionId);
+  if (!s) return;
+  const natural = sessionEffectiveEndTs(s);
+  const now = Date.now();
+  const endingEarly = s.status === "running" && natural > now;
+  const msg = endingEarly
+    ? `${s.chairName}'s timer hasn't finished yet (${fmtMMSS(Math.round((natural-now)/1000))} remaining) \u2014 end the session now anyway?`
+    : `Clear ${s.chairName}'s timer and make it available again?`;
+  if (!confirm(msg)) return;
+  try {
+    await fsDb.collection("sessions").doc(String(sessionId)).update({
+      status: "completed",
+      endTs: endingEarly ? now : natural,
+      needsAcknowledgment: false
+    });
+  } catch (e) {
+    alert("Couldn't clear this chair: " + e.message);
+  }
+}
+
+// Move -- the TOKEN/customer is correct, just started on the wrong physical chair. Only the
+// chair changes; the original start time stays untouched, so remaining time is unaffected.
+async function moveSessionToChair(sessionId, newChair){
+  const s = sessionsToday.find(x => x.id === sessionId);
+  if (!s) return;
+  if (sessionsToday.some(x => x.status === "running" && x.chairName === newChair)) {
+    alert(`${newChair} isn't free anymore \u2014 pick another available unit.`);
+    return;
+  }
+  if (!confirm(`Move this session from ${s.chairName} to ${newChair}?`)) return;
+  try {
+    await fsDb.collection("sessions").doc(String(sessionId)).update({ chairName: newChair, unitType: unitTypeOf(newChair) });
+  } catch (e) {
+    alert("Couldn't move this session: " + e.message);
+  }
+}
+
+// Send Back to Queue -- the WRONG token was started here entirely. Undoes the assignment:
+// reverts the session to its pre-start shape (same fields startFromQueue originally set, just
+// reversed) and recreates its waiting-queue entry from the session's own stored fields, with the
+// SAME sessionId so a later correct "Start on Chair" updates this same record, not a duplicate.
+async function sendSessionBackToQueue(sessionId){
+  const s = sessionsToday.find(x => x.id === sessionId);
+  if (!s) return;
+  if (!confirm(`Send this token back to the Waiting Queue? This undoes its chair assignment \u2014 use this only if the wrong token was started here.`)) return;
+  try {
+    const sessionRef = fsDb.collection("sessions").doc(String(sessionId));
+    const newQueueId = nextLocalId();
+    const batch = fsDb.batch();
+    batch.update(sessionRef, { chairName: null, status: "queued", startTs: null, endTs: null, needsAcknowledgment: false });
+    batch.set(fsDb.collection("waitingQueue").doc(String(newQueueId)), {
+      id: newQueueId,
+      unitType: s.unitType,
+      packageLabel: s.packageLabel,
+      durationMin: s.durationMin,
+      price: s.amount,
+      label: `${tokenTypeLabel(s.unitType)} Token`,
+      addedAt: s.queuedAt || Date.now(),
+      paid: s.paymentStatus === "paid",
+      method: s.method,
+      invoiceNo: s.invoiceNo || null,
+      gst: s.gst || { enabled: false, rate: 18, gstin: "" },
+      customerName: s.customerName || null,
+      customerPhone: s.customerPhone || null,
+      sessionId: sessionId
+    });
+    await batch.commit();
+  } catch (e) {
+    alert("Couldn't send this back to the queue: " + e.message);
+  }
+}
+
+// Shared row-actions builder used by both Operations' Live Chair Status and Queue's Chair Status,
+// so the two never drift out of sync with each other.
+function chairActionsHtml(chairName, session, isAwaitingAck){
+  if (!canManageChairs()) return "";
+  const clearBtn = `<button class="btn-outline btn-small chair-action-clear" data-session="${session.id}">Clear Timer</button>`;
+  if (isAwaitingAck) return clearBtn;
+  const freeOthers = freeMatchingChairs(unitTypeOf(chairName)).filter(c => c !== chairName);
+  const moveHtml = freeOthers.length ? `
+    <select class="chair-action-move" data-session="${session.id}" data-chair="${escapeHtml(chairName)}" style="padding:6px 8px; border-radius:6px; border:1px solid var(--line); background:var(--cream); color:var(--ink); font-family:'Inter',sans-serif; font-size:0.85rem;">
+      <option value="">Move to\u2026</option>
+      ${freeOthers.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
+    </select>` : "";
+  const sendBackBtn = `<button class="btn-outline btn-small chair-action-sendback" data-session="${session.id}">Send Back to Queue</button>`;
+  return `<div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center;">${clearBtn}${moveHtml}${sendBackBtn}</div>`;
+}
+
+// Same mid-interaction guard already used for Queue's "Start on a chair" select -- a live update
+// landing while a native dropdown is open would otherwise swap the DOM out from under an open
+// picker. Wiring every chair-action dropdown/button through this one helper keeps that guarantee
+// everywhere these controls appear, not just in the one spot it was first built for.
+function wireChairActionControls(el){
+  el.querySelectorAll(".chair-action-clear").forEach(b => b.addEventListener("click", (e) => withBusyButton(e.target, async () => {
+    await clearSessionTimer(parseInt(b.dataset.session, 10));
+  })));
+  el.querySelectorAll(".chair-action-sendback").forEach(b => b.addEventListener("click", (e) => withBusyButton(e.target, async () => {
+    await sendSessionBackToQueue(parseInt(b.dataset.session, 10));
+  })));
+  el.querySelectorAll(".chair-action-move").forEach(sel => {
+    sel.addEventListener("focus", () => {
+      queueInteractionActive = true;
+      clearTimeout(queueInteractionSafetyTimer);
+      queueInteractionSafetyTimer = setTimeout(() => {
+        queueInteractionActive = false;
+        if (queueRerenderPending) { queueRerenderPending = false; render(); }
+      }, 8000);
+    });
+    sel.addEventListener("blur", () => {
+      clearTimeout(queueInteractionSafetyTimer);
+      queueInteractionActive = false;
+      if (queueRerenderPending) { queueRerenderPending = false; render(); }
+    });
+    sel.addEventListener("change", async () => {
+      const sessionId = parseInt(sel.dataset.session, 10);
+      const newChair = sel.value;
+      if (!newChair) return;
+      await moveSessionToChair(sessionId, newChair);
+      sel.value = "";
+    });
+  });
+}
 function isChairInCart(){ return false; } // this page has no cart/checkout at all -- never true here
 function adjustmentFor(invoiceNo){ return adjustmentsToday.find(a => a.invoiceNo === invoiceNo) || null; }
 function paymentSplitFor(invoiceNo){ return paymentSplitsToday.find(p => p.invoiceNo === invoiceNo) || null; }
@@ -439,7 +581,7 @@ function computeVisibleTabs(){
   } else {
     allTabs = [ { id: "queue", label: "Queue" } ];
     if (liveConfig.mobileBookingEnabled) allTabs.push({ id: "book", label: "Book" });
-    allTabs.push({ id: "operations", label: "Operations" }, { id: "receipts", label: "Receipts" });
+    allTabs.push({ id: "operations", label: "Operations" }, { id: "receipts", label: "Receipts" }, { id: "settings", label: "Settings" });
   }
   // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
   // control what Mall Admin sees; it was never meant to also gate your own or staff's tools.
@@ -489,6 +631,7 @@ async function buildApp(){
         </div>
       </div>
     </div>
+    <div id="timesUpTray"></div>
     <div class="tabs" id="tabsBar"></div>
     <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
 
@@ -516,7 +659,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [] };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
@@ -556,7 +699,7 @@ async function buildApp(){
     // said when things stopped updating -- ticking it forward independently of Firestore activity
     // is what actually makes staleness visible rather than silently trusting old data on screen.
     unsubs.push(() => clearInterval(queueStaleTicker));
-    queueStaleTicker = setInterval(() => { if (currentTab === "queue") render(); }, 5000);
+    queueStaleTicker = setInterval(() => { if (currentTab === "queue") render(); else renderTimesUpTray(); }, 5000);
   }
 }
 
@@ -571,14 +714,71 @@ function requestRender(){
   renderDebounceTimer = setTimeout(() => { renderDebounceTimer = null; render(); }, 120);
 }
 
-function render(){  if (currentTab === "receipts") { renderReceiptsTab(); return; }
+// Persistent alert, visible above the tabs on EVERY screen (not tied to any one tab), same
+// principle as the desk dashboard's own Time's Up tray -- a unit finishing while staff are on a
+// different tab still gets seen immediately, not just whenever they happen to open Operations or
+// Queue. Always on regardless of mobileBookingEnabled; never shown to mall_admin.
+function renderTimesUpTray(){
+  const trayEl = document.getElementById("timesUpTray");
+  if (!trayEl) return; // buildApp() hasn't run yet
+  if (!canManageChairs()) { trayEl.innerHTML = ""; return; }
+  const overdue = sessionsToday.filter(s => s.needsAcknowledgment).sort((a,b) => a.endTs - b.endTs);
+  if (!overdue.length) { trayEl.innerHTML = ""; return; }
+  trayEl.innerHTML = `
+    <div style="background:#FBECE5; border-bottom:2px solid var(--copper); padding:8px 20px;">
+      ${overdue.map(s => {
+        const overdueSec = Math.max(0, Math.round((Date.now() - s.endTs) / 1000));
+        return `<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:4px 0; flex-wrap:wrap;">
+          <span>\u23f0 <b>${escapeHtml(s.chairName)}</b> \u2014 Time's Up (${fmtMMSS(overdueSec)} ago)</span>
+          <button class="btn-outline btn-small chair-action-clear" data-session="${s.id}">Acknowledge</button>
+        </div>`;
+      }).join("")}
+    </div>`;
+  wireChairActionControls(trayEl);
+}
+
+// Admin-only -- lets Book be turned on/off from a phone, without needing the desk dashboard open
+// at all. Writes to the SAME meta/config field the dashboard's own "Enable the Book tab" checkbox
+// controls -- merge:true touches only this one field, leaving every other setting (packages,
+// pricing, staff, etc.) the dashboard manages completely untouched.
+async function renderSettingsTab(){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  el.classList.remove("op-grid");
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">Settings</div>
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:1rem;">
+        <input type="checkbox" id="mobileBookingToggle" ${liveConfig.mobileBookingEnabled ? "checked" : ""}>
+        Enable the Book tab for staff (and this view)
+      </label>
+      <p class="panel-help">Same setting as the main dashboard's own "Enable the Book tab" checkbox \u2014 changing it here takes effect everywhere immediately, on every phone, no reload needed.</p>
+    </div>
+  `;
+  document.getElementById("mobileBookingToggle").addEventListener("change", async (e) => {
+    const checked = e.target.checked;
+    e.target.disabled = true;
+    try {
+      await fsDb.collection("meta").doc("config").set({ value: { mobileBookingEnabled: checked } }, { merge: true });
+    } catch (err) {
+      alert("Couldn't save: " + err.message);
+      e.target.checked = !checked;
+    }
+    e.target.disabled = false;
+  });
+}
+
+function render(){
+  renderTimesUpTray();
+  if (currentTab === "receipts") { renderReceiptsTab(); return; }
   if (currentTab === "mdshare") { renderMallShareTab(); return; }
   if (currentTab === "analytics") { renderAnalyticsTab(); return; }
-  if (currentTab === "queue") {
-    if (queueInteractionActive) { queueRerenderPending = true; return; }
-    renderQueueTab();
-    return;
-  }
+  if (currentTab === "settings") { renderSettingsTab(); return; }
+  // Move's dropdown can now appear on Queue OR Operations -- a live update landing while either
+  // is open would otherwise yank the DOM out from under an open picker, same risk this guard was
+  // originally built to prevent for Queue's "Start on a chair" select.
+  if (queueInteractionActive) { queueRerenderPending = true; return; }
+  if (currentTab === "queue") { renderQueueTab(); return; }
   if (currentTab === "book") { renderBookTab(); return; }
   renderOperationsTab();
 }
@@ -594,14 +794,14 @@ function renderOperationsTab(){
     if (running) {
       const remainSec = Math.max(0, Math.round((sessionEffectiveEndTs(running) - Date.now())/1000));
       const paused = !!running.pauseStartedAt;
-      return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-red"></span>Running${paused ? " (Paused)" : ""}</td><td>${running.durationMin}m</td><td>${fmtMMSS(remainSec)}</td></tr>`;
+      return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-red"></span>Running${paused ? " (Paused)" : ""}</td><td>${running.durationMin}m</td><td>${fmtMMSS(remainSec)}</td><td>${chairActionsHtml(chairName, running, false)}</td></tr>`;
     }
     if (chairAwaitingAcknowledgment(chairName)) {
       const s = latestUnacknowledgedForChair(chairName);
       const overdueSec = Math.max(0, Math.round((Date.now() - s.endTs) / 1000));
-      return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-red"></span>\u23f0 Time's Up (${fmtMMSS(overdueSec)} ago)</td><td>${s.durationMin}m</td><td>-</td></tr>`;
+      return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-red"></span>\u23f0 Time's Up (${fmtMMSS(overdueSec)} ago)</td><td>${s.durationMin}m</td><td>-</td><td>${chairActionsHtml(chairName, s, true)}</td></tr>`;
     }
-    return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-green"></span>Available</td><td>-</td><td>-</td></tr>`;
+    return `<tr><td>${escapeHtml(chairName)}</td><td><span class="dot dot-green"></span>Available</td><td>-</td><td>-</td><td></td></tr>`;
   }).join("");
 
   const completed = sessionsToday.filter(s => s.status === "completed").length;
@@ -633,7 +833,7 @@ function renderOperationsTab(){
   el.innerHTML = `
     <div class="panel">
       <div class="panel-title">Live Chair Status</div>
-      <table><thead><tr><th>Unit</th><th>Status</th><th>Package</th><th>Remaining</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="table-scroll"><table><thead><tr><th>Unit</th><th>Status</th><th>Package</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>
     </div>
     <div class="panel">
       <div class="panel-title">Today's Summary</div>
@@ -646,6 +846,8 @@ function renderOperationsTab(){
     </div>
     ${paymentPanelHtml}
   `;
+
+  wireChairActionControls(el);
 }
 
 /* ========================= RECEIPTS TAB (view/Print/PDF only) =========================
@@ -1383,7 +1585,7 @@ function todayStrFromDate(d){ return d.getFullYear() + "-" + String(d.getMonth()
    of a separate "sessions where running" listener, since that data's already on hand here. */
 function freeMatchingChairs(unitType){
   const busy = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
-  return activeChairOrder().filter(c => unitTypeOf(c) === unitType && !busy.has(c));
+  return activeChairOrder().filter(c => unitTypeOf(c) === unitType && !busy.has(c) && !chairAwaitingAcknowledgment(c));
 }
 // Which OTHER unit types currently offer a package of this exact duration/price -- detected from
 // actual pricing, not hardcoded to any specific duration, so it self-adjusts if packages change.
@@ -1400,7 +1602,7 @@ function crossCompatibleTypes(unitType, durationMin, price){
 function freeCrossChairs(unitType, durationMin, price){
   const busy = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
   const crossTypes = crossCompatibleTypes(unitType, durationMin, price);
-  return activeChairOrder().filter(c => crossTypes.includes(unitTypeOf(c)) && !busy.has(c));
+  return activeChairOrder().filter(c => crossTypes.includes(unitTypeOf(c)) && !busy.has(c) && !chairAwaitingAcknowledgment(c));
 }
 
 // Best-effort "ready by" estimate for a waiting token: soonest matching chair frees up, in queue
@@ -1473,12 +1675,19 @@ function renderQueueTab(){
 function renderQueueTabInner(el){
   const syncAgoSec = lastQueueSyncTs ? Math.round((Date.now() - lastQueueSyncTs) / 1000) : null;
   const syncLabel = syncAgoSec == null ? "Not synced yet" : (syncAgoSec < 3 ? "Synced just now" : `Synced ${syncAgoSec}s ago`);
-  const busyNames = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
+  const runningNames = new Set(sessionsToday.filter(s => s.status === "running").map(s => s.chairName));
+  const awaitingNames = activeChairOrder().filter(c => !runningNames.has(c) && chairAwaitingAcknowledgment(c));
+  const busyNames = new Set([...runningNames, ...awaitingNames]);
   const chairRows = [...busyNames].sort().map(name => {
     const running = getRunningSession(name);
-    const remainSec = running ? Math.max(0, Math.round((sessionEffectiveEndTs(running) - Date.now())/1000)) : null;
-    const paused = running && !!running.pauseStartedAt;
-    return `<tr><td><span class="dot dot-red"></span>${escapeHtml(name)}</td><td>Running${paused ? " (Paused)" : ""}</td><td>${running ? running.durationMin + "m" : "-"}</td><td>${remainSec != null ? fmtMMSS(remainSec) : "-"}</td></tr>`;
+    if (running) {
+      const remainSec = Math.max(0, Math.round((sessionEffectiveEndTs(running) - Date.now())/1000));
+      const paused = !!running.pauseStartedAt;
+      return `<tr><td><span class="dot dot-red"></span>${escapeHtml(name)}</td><td>Running${paused ? " (Paused)" : ""}</td><td>${running.durationMin}m</td><td>${fmtMMSS(remainSec)}</td><td>${chairActionsHtml(name, running, false)}</td></tr>`;
+    }
+    const s = latestUnacknowledgedForChair(name);
+    const overdueSec = Math.max(0, Math.round((Date.now() - s.endTs) / 1000));
+    return `<tr><td><span class="dot dot-red"></span>${escapeHtml(name)}</td><td>\u23f0 Time's Up (${fmtMMSS(overdueSec)} ago)</td><td>${s.durationMin}m</td><td>-</td><td>${chairActionsHtml(name, s, true)}</td></tr>`;
   }).join("");
 
   const sorted = queueRows.slice().sort((a,b) => (a.addedAt||0) - (b.addedAt||0));
@@ -1514,9 +1723,11 @@ function renderQueueTabInner(el){
     </div>
     <div class="panel">
       <div class="panel-title">Chair Status</div>
-      ${busyNames.size ? `<table><thead><tr><th>Unit</th><th>Status</th><th>Package</th><th>Remaining</th></tr></thead><tbody>${chairRows}</tbody></table>` : `<p class="panel-help">All units free.</p>`}
+      ${busyNames.size ? `<div class="table-scroll"><table><thead><tr><th>Unit</th><th>Status</th><th>Package</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${chairRows}</tbody></table></div>` : `<p class="panel-help">All units free.</p>`}
     </div>
   `;
+
+  wireChairActionControls(el);
 
   el.querySelectorAll(".call-btn").forEach(b => b.addEventListener("click", async () => {
     const id = parseInt(b.dataset.id, 10);
