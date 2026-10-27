@@ -15,8 +15,10 @@
     "settlementReport": true
   },
   "analytics": {
-    "enabled": true,
-    "revenue": true,
-    "monthlyRevenue": true
+  "enabled": true,
+  "revenue": true,
+  "monthlyRevenue": true,
+  "salesTrend": true,
+  "customersRelaxed": true
   }
 }
