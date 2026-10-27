@@ -6,8 +6,8 @@
 <title>RRG Lounge — Relax, Recharge, Go | Chennai</title>
 <meta name="description" content="RRG Lounge brings premium automated massage chair sessions to your mall visit in Chennai. No appointment, no spa prices — just a few minutes to reset.">
 
-<!-- Canonical: set this to whichever domain you make primary once both are live -->
-<link rel="canonical" href="https://www.relaxrechargego.com/">
+<!-- Canonical: the primary domain (GitHub Pages sends www to this one) -->
+<link rel="canonical" href="https://relaxrechargego.com/">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -144,6 +144,38 @@
   .section-head h2 { font-size: clamp(30px, 4vw, 46px); line-height: 1.08; }
   .reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.7s ease, transform 0.7s ease; }
   .reveal.in { opacity: 1; transform: translateY(0); }
+
+  /* ---------- IMPACT BAND (customers relaxed) ---------- */
+  .impact[hidden] { display: none; }
+  .impact { padding: 72px 0 0; }
+  .impact-head { text-align: center; max-width: 720px; margin: 0 auto 40px; }
+  .impact-head .kicker { margin-bottom: 14px; }
+  .impact-head h2 { font-size: clamp(28px, 3.6vw, 42px); line-height: 1.1; }
+  .impact-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 20px; }
+  .impact-tile {
+    background: #fff; border: 1px solid var(--line); border-radius: 20px;
+    padding: 34px 20px 30px; text-align: center;
+  }
+  .impact-tile.main { border: 1.5px solid var(--copper); }
+  .impact-icon { width: 52px; height: 52px; color: var(--copper); display: block; margin: 0 auto; }
+  .impact-num {
+    font-family: 'Fraunces', serif; font-weight: 600; letter-spacing: -0.01em; line-height: 1.05;
+    font-size: clamp(38px, 4.6vw, 58px); margin: 14px 0 8px;
+    font-variant-numeric: lining-nums tabular-nums; white-space: nowrap;
+  }
+  .impact-tile.main .impact-num { font-size: clamp(46px, 6vw, 78px); }
+  .impact-num .plus { color: var(--copper); }
+  .impact-label { font-size: 15px; font-weight: 600; opacity: 0.75; }
+  .impact-note {
+    text-align: center; margin: 26px 0 0;
+    font-family: 'Fraunces', serif; font-style: italic; font-weight: 500;
+    font-size: clamp(18px, 2.2vw, 24px); color: var(--copper);
+  }
+  @media (max-width: 860px) {
+    .impact-grid { grid-template-columns: 1fr 1fr; gap: 14px; }
+    .impact-tile.main { grid-column: 1 / -1; }
+    .impact-tile { padding: 26px 12px 24px; }
+  }
 
   /* ---------- ABOUT / VISION ---------- */
   .about-grid {
@@ -290,6 +322,18 @@
     </div>
   </div>
 </header>
+
+<!-- ================= IMPACT (customers relaxed, combined across branches) ================= -->
+<section id="impact" class="impact" hidden>
+  <div class="wrap">
+    <div class="impact-head reveal">
+      <div class="kicker">Across All RRG Lounge Branches</div>
+      <h2>Relaxed, recharged, and back to shopping.</h2>
+    </div>
+    <div class="impact-grid reveal" id="impact-grid"></div>
+    <p class="impact-note reveal">…and Relaxing</p>
+  </div>
+</section>
 
 <!-- ================= ABOUT / VISION ================= -->
 <section id="about">
@@ -548,6 +592,121 @@
     }
   }
   loadLocations();
+
+  // ---------- Customers Relaxed band ----------
+  // Each branch publishes three numbers (total, full body, leg) to a tiny public record in its own Firebase
+  // project: publicStats/relaxed. This page reads those records, adds the branches together and shows each
+  // figure rounded DOWN to the last full 500 it has passed: "10,000+" until the real count goes past 10,500,
+  // then "10,500+", then "11,000+" once it goes past 11,000, and so on. Because it only ever rounds down, the
+  // band can never overstate. stats.json lists the branches (id, projectId, apiKey -- the same public web
+  // config the other pages use); the total/fullBody/leg numbers in it are only a FALLBACK, used for a branch
+  // whose live record can't be read. The band stays hidden until there is something true to show.
+  const RELAX_STEP = 500;
+  function roundDownBy500(count) {
+    const n = Number(count) || 0;
+    return n > RELAX_STEP ? Math.floor((n - 1) / RELAX_STEP) * RELAX_STEP : 0;
+  }
+  function formatIndian(n) { return Math.round(n).toLocaleString('en-IN'); }
+
+  const IMPACT_TILES = [
+    { key: 'total', label: 'Customers Relaxed', main: true,
+      icon: '<svg class="impact-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M24 7 C30 15 30 25 24 33 C18 25 18 15 24 7 Z"/><path d="M24 33 C15 33 9 27 7.5 19 C15 19.5 21 25 24 33 Z"/><path d="M24 33 C33 33 39 27 40.5 19 C33 19.5 27 25 24 33 Z"/><path d="M24 33 C17 35 11 34 5 30"/><path d="M24 33 C31 35 37 34 43 30"/><path d="M12 41 C19 38.5 29 38.5 36 41"/></svg>' },
+    { key: 'fullBody', label: 'Full Body Relaxations',
+      icon: '<svg class="impact-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 11 C8.5 8 10.5 6 13.5 6.5 C15.7 6.9 16.8 8.2 17.8 10.5 L25 27 C26 29.5 24.4 31 22 31 C20 31 18.6 30 17.6 28 Z"/><path d="M24 32 L36 33 L45 40.5"/><path d="M24 34 L24 41"/><path d="M16 41 L33 41"/></svg>' },
+    { key: 'leg', label: 'Leg Relaxations',
+      icon: '<svg class="impact-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M19 41 C13 41 11.5 35 13.5 29 C15 24.5 15 20 18.5 17 C23 13.5 29 15.5 29.5 21.5 C30 26 31 29 31 33 C31 38 27 41 19 41 Z"/><circle cx="23" cy="9.5" r="2.4"/><circle cx="29" cy="10.5" r="2.1"/><circle cx="34" cy="14" r="1.9"/><circle cx="37.5" cy="19" r="1.7"/></svg>' }
+  ];
+
+  function animateCount(el, target, reduceMotion) {
+    if (reduceMotion) { el.textContent = formatIndian(target); return; }
+    const t0 = performance.now(), dur = 1400;
+    function step(t) {
+      const p = Math.min(1, (t - t0) / dur), eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = formatIndian(target * eased);
+      if (p < 1) requestAnimationFrame(step); else el.textContent = formatIndian(target);
+    }
+    requestAnimationFrame(step);
+  }
+
+  const RELAX_CACHE_KEY = 'rrg-relaxed-live-v1', RELAX_CACHE_MS = 6 * 60 * 60 * 1000;
+  function readRelaxCache() {
+    try { const c = JSON.parse(sessionStorage.getItem(RELAX_CACHE_KEY) || 'null'); return c && (Date.now() - c.t) < RELAX_CACHE_MS ? c.live : null; }
+    catch (e) { return null; }
+  }
+  function writeRelaxCache(live) {
+    try { sessionStorage.setItem(RELAX_CACHE_KEY, JSON.stringify({ t: Date.now(), live: live })); } catch (e) {}
+  }
+
+  // Reads one branch's published totals straight from its own Firebase project. Returns null on ANY problem
+  // (no record yet, rules, network, odd data) so the caller can fall back to the numbers in stats.json.
+  async function fetchLiveBranchStats(b) {
+    if (!b || !b.projectId || !b.apiKey) return null;
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 6000) : null;
+    try {
+      const url = 'https://firestore.googleapis.com/v1/projects/' + encodeURIComponent(b.projectId) +
+        '/databases/(default)/documents/publicStats/relaxed?key=' + encodeURIComponent(b.apiKey);
+      const res = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+      if (!res.ok) return null;
+      const doc = await res.json();
+      const f = (doc && doc.fields) || {};
+      const num = (k) => { const v = f[k]; return v ? Number(v.integerValue !== undefined ? v.integerValue : v.doubleValue) : NaN; };
+      const out = { total: num('total'), fullBody: num('fullBody'), leg: num('leg') };
+      return [out.total, out.fullBody, out.leg].every(Number.isFinite) ? out : null;
+    } catch (err) {
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function loadImpact() {
+    const section = document.getElementById('impact');
+    try {
+      const res = await fetch('stats.json', { cache: 'no-cache' });
+      if (!res.ok) throw new Error('stats.json not found');
+      const data = await res.json();
+      let branches = Array.isArray(data.branches) ? data.branches : [];
+
+      // Live first: each branch's own published totals. The browser remembers them for a few hours so repeat
+      // visits don't read Firestore again. The numbers typed into stats.json are used only where live fails.
+      let live = readRelaxCache();
+      if (!live) {
+        live = {};
+        const results = await Promise.all(branches.map(b => fetchLiveBranchStats(b)));
+        branches.forEach((b, i) => { if (results[i] && b && b.id) live[b.id] = results[i]; });
+        if (Object.keys(live).length) writeRelaxCache(live);
+      }
+      branches = branches.map(b => (b && b.id && live[b.id]) ? Object.assign({}, b, live[b.id]) : b);
+      console.info('Customers Relaxed band: ' + branches.map(b => ((b && b.id) || '?') + ' ' + ((b && b.id && live[b.id]) ? 'live' : 'manual fallback')).join(', '));
+
+      const sum = (key) => branches.reduce((a, b) => a + Math.max(0, Number(b && b[key]) || 0), 0);
+      const tiles = IMPACT_TILES.map(t => Object.assign({}, t, { value: roundDownBy500(sum(t.key)) })).filter(t => t.value > 0);
+      if (!tiles.length) return;
+
+      const grid = document.getElementById('impact-grid');
+      grid.innerHTML = tiles.map(t => `
+        <div class="impact-tile${t.main ? ' main' : ''}" role="group" aria-label="${formatIndian(t.value)}+ ${t.label}">
+          ${t.icon}
+          <div class="impact-num" aria-hidden="true"><span data-target="${t.value}">0</span><span class="plus">+</span></div>
+          <div class="impact-label">${t.label}</div>
+        </div>`).join('');
+      section.hidden = false;
+
+      const countIO = new IntersectionObserver((entries, obs) => {
+        entries.forEach(e => {
+          if (!e.isIntersecting) return;
+          obs.unobserve(e.target);
+          const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+          grid.querySelectorAll('[data-target]').forEach(el => animateCount(el, Number(el.dataset.target), reduce));
+        });
+      }, { threshold: 0.3 });
+      countIO.observe(grid);
+    } catch (err) {
+      console.warn('Customers Relaxed band stays hidden:', err.message);
+    }
+  }
+  loadImpact();
 
   // Logo: auto-detect file extension (upload assets/rrg-logo.png / .jpg / .jpeg / .webp — any works)
   tryLoadImage('assets/rrg-logo', 0, (src) => {
