@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RRG Lounge — Mall Admin Portal</title>
+<title>RRG Lounge — Mall Admin Portal (Chrompet)</title>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
@@ -116,12 +116,12 @@
 // real login (Staff ID + PIN) succeeds AND the account's role is verified to be mall_admin --
 // unlike the older dashboard file, there is no bootstrap/auto-sign-in of any kind here.
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyA6BnYGNx3hKNcSxHgN9Wpyz6LkB_MUKq4",
-  authDomain: "rrg-lounge-os.firebaseapp.com",
-  projectId: "rrg-lounge-os",
-  storageBucket: "rrg-lounge-os.firebasestorage.app",
-  messagingSenderId: "1071966836969",
-  appId: "1:1071966836969:web:e433f87d2d05748e573878"
+  apiKey: "AIzaSyD4n3zJu8-A-6FLiqH7I_go_OnykDOamck",
+  authDomain: "rrg-lounge-os-tcs.firebaseapp.com",
+  projectId: "rrg-lounge-os-tcs",
+  storageBucket: "rrg-lounge-os-tcs.firebasestorage.app",
+  messagingSenderId: "101978979870",
+  appId: "1:101978979870:web:7ea4f87c04a42879cdf80f"
 };
 firebase.initializeApp(FIREBASE_CONFIG);
 const fbAuth = firebase.auth();
@@ -161,7 +161,7 @@ function tryLoadImage(imgEl, basePath, extIndex){
 
 async function loadMallsList(){
   try {
-    const res = await fetch("/malls.json", { cache: "no-cache" });
+    const res = await fetch("/malls-tcs.json", { cache: "no-cache" });
     if (!res.ok) throw new Error("no malls.json");
     mallsList = await res.json();
   } catch (e) {
@@ -178,7 +178,7 @@ async function loadMallsList(){
 let visibilityConfig = {};
 async function loadVisibilityConfig(){
   try {
-    const res = await fetch("/mall-admin-visibility.json", { cache: "no-cache" });
+    const res = await fetch("/mall-admin-visibility-tcs.json", { cache: "no-cache" });
     if (!res.ok) throw new Error("no visibility config");
     visibilityConfig = await res.json();
   } catch (e) {
@@ -602,6 +602,12 @@ function refreshTabBar(){
     tabEl.addEventListener("click", () => {
       currentTab = tabEl.dataset.tab;
       tabsEl.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tabEl));
+      // Analytics/Mall Share load their full session history once and cache it (a live listener
+      // for "all-time" data would be needlessly expensive) -- so the longer the page stays open
+      // without switching away, the more that snapshot drifts from Operations' always-live
+      // figures. Forcing a fresh reload on every switch INTO either tab keeps them honest without
+      // re-fetching on every unrelated update while just sitting on the tab.
+      if (currentTab === "analytics" || currentTab === "mdshare") mallShareLoaded = false;
       render();
     });
   });
@@ -1803,6 +1809,210 @@ async function startFromQueue(qid, chairName){
   }
 }
 
+/* ========================= SALES TREND + CUSTOMERS RELAXED (Analytics, optional) =========================
+   Ported from the desk dashboard so Mall Admin sees the same figures. Both panels reuse the all-time
+   session history the Analytics tab already loads -- no extra Firestore reads. Each is switched on/off
+   from the visibility settings file (analytics.salesTrend / analytics.customersRelaxed) and, unlike the
+   older panels, stays HIDDEN until set to exactly true -- so deploying this code on its own changes
+   nothing for Mall Admin until you deliberately enable it. */
+function isExplicitlyOn(path){
+  let node = visibilityConfig;
+  for (const p of path.split(".")) {
+    if (node == null || typeof node !== "object") return false;
+    node = node[p];
+  }
+  return node === true;
+}
+
+// ---- Sales Trend ----
+let salesTrendRange = "1M";
+const SALES_TREND_RANGES = [["1W", "1W"], ["1M", "1M"], ["3M", "3M"], ["6M", "6M"], ["1Y", "1Y"], ["ALL", "All"]];
+
+// Money actually collected per day -- same rule as the desk dashboard: paid bills only (unpaid Pay Later
+// and refunded cancellations count 0), plus any invoice adjustment on those paid bills, on the bill's own
+// date. Days with no collected sales (shop closed) are left out completely: not plotted, never "lowest".
+function dailyCollectedSalesMS(){
+  const byDay = {};
+  mallShareSessions.forEach(s => {
+    if (!s.date || s.gapFiller) return;
+    const amt = collectedAmount(s);
+    if (!(amt > 0)) return;
+    const d = byDay[s.date] || (byDay[s.date] = { date: s.date, rev: 0, invoices: new Set() });
+    d.rev += amt;
+    if (s.invoiceNo && !d.invoices.has(s.invoiceNo)) {
+      d.invoices.add(s.invoiceNo);
+      const adj = msAdjustmentFor(s.invoiceNo);
+      if (adj) d.rev += adj.amount;
+    }
+  });
+  return Object.values(byDay)
+    .map(d => ({ date: d.date, rev: d.rev, bills: d.invoices.size }))
+    .filter(d => d.rev > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+function salesWeekday(dateStr){ const [y, m, d] = dateStr.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString("en-IN", { weekday: "long" }); }
+function salesMonthLabel(key){ const [y, m] = key.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-IN", { month: "short", year: "numeric" }); }
+function salesDayText(d){ return d ? `${dmyShort(d.date)} \u00b7 ${salesWeekday(d.date)}` : "\u2014"; }
+function pickHighLow(list, lowExclude){
+  if (!list.length) return { high: null, low: null };
+  let high = list[0]; list.forEach(x => { if (x.rev > high.rev) high = x; });
+  const lowPool = list.filter(x => !lowExclude(x));
+  let low = lowPool[0] || null; lowPool.forEach(x => { if (x.rev < low.rev) low = x; });
+  return { high, low };
+}
+function monthlyFromDaily(days){
+  const m = {};
+  days.forEach(d => { const k = d.date.slice(0, 7); const r = m[k] || (m[k] = { key: k, rev: 0, bills: 0, days: 0 }); r.rev += d.rev; r.bills += d.bills; r.days++; });
+  return Object.values(m).sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function initSalesTrendPanel(){
+  const el = document.getElementById("salesTrendPanel");
+  if (!el) return;
+  const allDays = dailyCollectedSalesMS();
+  const todayS = todayStr();
+  const overall = pickHighLow(allDays, d => d.date === todayS);
+  const card = (label, value, sub, color) => `<div style="flex:1 1 200px; border:1px solid var(--line); border-radius:10px; padding:10px 14px;">
+      <div style="font-size:0.8rem; opacity:0.75;">${label}</div>
+      <div style="font-size:1.3rem; font-weight:700; margin-top:2px; ${color ? "color:" + color + ";" : ""}">${value}</div>
+      <div style="font-size:0.8rem; opacity:0.7; margin-top:2px;">${sub}</div></div>`;
+
+  const now = new Date();
+  const rangeStart = { "1W": 6, "1M": 29, "3M": 89, "6M": 181 };
+  let fromDate = null;
+  if (rangeStart[salesTrendRange] != null) fromDate = todayStr(new Date(now.getFullYear(), now.getMonth(), now.getDate() - rangeStart[salesTrendRange]));
+  if (salesTrendRange === "1Y") fromDate = todayStr(new Date(now.getFullYear(), now.getMonth() - 11, 1));
+  const days = fromDate ? allDays.filter(d => d.date >= fromDate) : allDays;
+  const monthly = salesTrendRange === "1Y" || salesTrendRange === "ALL";
+  const firstMonth = allDays.length ? allDays[0].date.slice(0, 7) : null;
+  const curMonth = todayS.slice(0, 7);
+  const months = monthlyFromDaily(days);
+  const dayHL = pickHighLow(days, d => d.date === todayS);
+  const monHL = pickHighLow(months, m => m.key === curMonth || m.key === firstMonth);
+  const total = days.reduce((a, d) => a + d.rev, 0);
+  const bills = days.reduce((a, d) => a + d.bills, 0);
+  const points = monthly
+    ? months.map(m => ({ key: m.key, label: salesMonthLabel(m.key), rev: m.rev, sub: `${m.days} trading day${m.days === 1 ? "" : "s"} \u00b7 ${m.bills} bills${m.key === curMonth ? " \u00b7 month in progress" : ""}` }))
+    : days.map(d => ({ key: d.date, label: `${dmyShort(d.date)} ${salesWeekday(d.date).slice(0, 3)}`, rev: d.rev, sub: `${d.bills} bill${d.bills === 1 ? "" : "s"}${d.date === todayS ? " \u00b7 today, in progress" : ""}` }));
+  const hiKey = monthly ? (monHL.high && monHL.high.key) : (dayHL.high && dayHL.high.date);
+  const loKey = monthly ? (monHL.low && monHL.low.key) : (dayHL.low && dayHL.low.date);
+
+  el.innerHTML = `
+    <div class="panel-title">Sales Trend</div>
+    <p class="panel-help">Overall (all time) \u2014 collected sales only; closed days and today aren't counted as lowest.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+      ${card("\u{1F4C8} Highest sale in a day (overall)", overall.high ? fmtMoney(overall.high.rev) : "\u2014", overall.high ? `${salesDayText(overall.high)} \u00b7 ${overall.high.bills} bills` : "No sales yet", "#2f8f5b")}
+      ${card("\u{1F4C9} Lowest sale in a day (overall)", overall.low ? fmtMoney(overall.low.rev) : "\u2014", overall.low ? `${salesDayText(overall.low)} \u00b7 ${overall.low.bills} bill${overall.low.bills === 1 ? "" : "s"}` : "Not enough days yet", "#b3432f")}
+    </div>
+    <div class="btn-group" style="align-items:center; margin-bottom:6px;">
+      ${SALES_TREND_RANGES.map(([k, l]) => `<button class="btn btn-small ${k === salesTrendRange ? "btn-primary" : "btn-outline"} sales-trend-range" data-r="${k}">${l}</button>`).join("")}
+      <span class="panel-help" style="margin:0;">${monthly ? "One point per month" : "One point per trading day"}</span>
+    </div>
+    <div id="salesTrendChart" style="position:relative; width:100%;"></div>
+    <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;">
+      ${card("Highest day in this range", dayHL.high ? fmtMoney(dayHL.high.rev) : "\u2014", salesDayText(dayHL.high), "#2f8f5b")}
+      ${card("Lowest day in this range", dayHL.low ? fmtMoney(dayHL.low.rev) : "\u2014", salesDayText(dayHL.low), "#b3432f")}
+      ${(salesTrendRange === "1W" || salesTrendRange === "1M") ? "" : `
+      ${card("Highest month in this range", monHL.high ? fmtMoney(monHL.high.rev) : "\u2014", monHL.high ? salesMonthLabel(monHL.high.key) + (monHL.high.key === curMonth ? " (in progress)" : "") : "\u2014", "#2f8f5b")}
+      ${card("Lowest month in this range", monHL.low ? fmtMoney(monHL.low.rev) : "\u2014", monHL.low ? salesMonthLabel(monHL.low.key) : "Needs a complete month", "#b3432f")}`}
+      ${card("Total in this range", fmtMoney(total), `${days.length} trading day${days.length === 1 ? "" : "s"} \u00b7 ${bills} bills`)}
+      ${card("Average per trading day", days.length ? fmtMoney(total / days.length) : "\u2014", "closed days not included")}
+    </div>`;
+
+  el.querySelectorAll(".sales-trend-range").forEach(b => b.addEventListener("click", () => { salesTrendRange = b.dataset.r; initSalesTrendPanel(); }));
+  drawSalesTrendChart(document.getElementById("salesTrendChart"), points, hiKey, loKey);
+}
+
+function drawSalesTrendChart(box, points, hiKey, loKey){
+  if (!points.length) { box.innerHTML = `<p class="panel-help" style="padding:30px 0; text-align:center;">No collected sales in this range.</p>`; return; }
+  const W = 1000, H = 300, padL = 12, padR = 78, padT = 16, padB = 34;
+  const vals = points.map(p => p.rev);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi === lo) { hi = hi * 1.1 + 1; lo = Math.max(0, lo * 0.9); }
+  // tidy axis steps (500, 1,000, 2,000...) so the axis reads \u20B92,000 / \u20B94,000, not \u20B92,060 / \u20B94,305
+  const rawStep = (hi - lo) / 4, mag = Math.pow(10, Math.floor(Math.log10(rawStep))), f = rawStep / mag;
+  const stepV = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag;
+  lo = Math.max(0, Math.floor(lo / stepV) * stepV); hi = Math.ceil(hi / stepV) * stepV; if (hi === lo) hi = lo + stepV;
+  const x = (i) => points.length === 1 ? padL + (W - padL - padR) / 2 : padL + i * (W - padL - padR) / (points.length - 1);
+  const y = (v) => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
+  const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.rev).toFixed(1)}`).join(" ");
+  const area = `${line} L${x(points.length - 1).toFixed(1)},${H - padB} L${x(0).toFixed(1)},${H - padB} Z`;
+  const ticks = Math.round((hi - lo) / stepV), yLines = [];
+  for (let t = 0; t <= ticks; t++) { const v = lo + stepV * t; yLines.push(`<line x1="${padL}" x2="${W - padR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="currentColor" stroke-opacity="0.12"/><text x="${W - padR + 8}" y="${(y(v) + 4).toFixed(1)}" font-size="13" fill="currentColor" fill-opacity="0.65">${fmtMoney(v)}</text>`); }
+  const nX = Math.min(points.length, 7), xLabels = [];
+  for (let k = 0; k < nX; k++) { const i = nX === 1 ? 0 : Math.round(k * (points.length - 1) / (nX - 1)); const anchor = k === 0 ? "start" : (k === nX - 1 ? "end" : "middle"); xLabels.push(`<text x="${x(i).toFixed(1)}" y="${H - 10}" font-size="13" text-anchor="${anchor}" fill="currentColor" fill-opacity="0.65">${escapeHtml(points[i].label)}</text>`); }
+  const marks = points.map((p, i) => p.key === hiKey ? `<circle cx="${x(i).toFixed(1)}" cy="${y(p.rev).toFixed(1)}" r="6" fill="#2f8f5b" stroke="#fff" stroke-width="2"/>` : p.key === loKey ? `<circle cx="${x(i).toFixed(1)}" cy="${y(p.rev).toFixed(1)}" r="6" fill="#b3432f" stroke="#fff" stroke-width="2"/>` : "").join("");
+  const step = points.length > 1 ? (W - padL - padR) / (points.length - 1) : (W - padL - padR);
+  const hits = points.map((p, i) => `<rect class="st-hit" data-i="${i}" x="${(x(i) - step / 2).toFixed(1)}" y="${padT}" width="${step.toFixed(1)}" height="${H - padT - padB}" fill="transparent"/>`).join("");
+  box.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; display:block; color:var(--ink);" role="img" aria-label="Sales trend chart">
+      <defs><linearGradient id="stFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#C1703A" stop-opacity="0.35"/><stop offset="1" stop-color="#C1703A" stop-opacity="0.02"/></linearGradient></defs>
+      ${yLines.join("")}
+      <path d="${area}" fill="url(#stFill)"/>
+      <path d="${line}" fill="none" stroke="#C1703A" stroke-width="3" stroke-linejoin="round"/>
+      <line id="stCursor" x1="0" x2="0" y1="${padT}" y2="${H - padB}" stroke="currentColor" stroke-opacity="0.5" style="display:none;"/>
+      <circle id="stDot" r="5" fill="#DE9863" stroke="#fff" stroke-width="2" style="display:none;"/>
+      ${marks}${xLabels.join("")}${hits}
+    </svg>
+    <div id="stTip" style="position:absolute; display:none; pointer-events:none; background:#fff; border:1px solid var(--copper); border-radius:8px; padding:6px 10px; font-size:0.85rem; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>`;
+  const svg = box.querySelector("svg"), tip = box.querySelector("#stTip"), cur = box.querySelector("#stCursor"), dot = box.querySelector("#stDot");
+  const show = (i) => {
+    const p = points[i], px = x(i), py = y(p.rev);
+    cur.setAttribute("x1", px); cur.setAttribute("x2", px); cur.style.display = "";
+    dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.style.display = "";
+    tip.innerHTML = `<div style="opacity:0.75;">${escapeHtml(p.label)}</div><div style="font-weight:700; font-size:1rem;">${fmtMoney(p.rev)}</div><div style="opacity:0.7; font-size:0.8rem;">${escapeHtml(p.sub)}</div>`;
+    tip.style.display = "";
+    const scale = svg.getBoundingClientRect().width / W;
+    let left = px * scale + 12; if (left + tip.offsetWidth > box.clientWidth) left = px * scale - tip.offsetWidth - 12;
+    tip.style.left = Math.max(0, left) + "px"; tip.style.top = Math.max(0, py * scale - 30) + "px";
+  };
+  box.querySelectorAll(".st-hit").forEach(r => { r.addEventListener("mouseenter", () => show(Number(r.dataset.i))); r.addEventListener("click", () => show(Number(r.dataset.i))); });
+  svg.addEventListener("mouseleave", () => { tip.style.display = "none"; cur.style.display = "none"; dot.style.display = "none"; });
+}
+
+// ---- Customers Relaxed ----
+// One session that actually ran AND was paid = one customer relaxed (same rule as the desk dashboard).
+// Grouped by the unit it actually ran on: Chair = Full Body, any Leg-type unit = Leg. Deliberately only
+// these three figures -- no Leg / Advanced Leg split and no relaxation time.
+function relaxedCategoryOfMS(s){
+  const type = s.chairName ? unitTypeOf(s.chairName) : (s.unitType || "Chair");
+  if (type === "Chair") return "fullBody";
+  if (/leg/i.test(type)) return "leg";
+  return "other";
+}
+function isRelaxedSessionMS(s){
+  return !s.gapFiller && (s.status === "running" || s.status === "completed") && s.paymentStatus === "paid";
+}
+function relaxedTotalsMS(){
+  const t = { total: 0, fullBody: 0, leg: 0 };
+  mallShareSessions.forEach(s => {
+    if (!isRelaxedSessionMS(s)) return;
+    t.total++;
+    const c = relaxedCategoryOfMS(s);
+    if (c === "fullBody") t.fullBody++; else if (c === "leg") t.leg++;
+  });
+  return t;
+}
+function initCustomersRelaxedPanel(){
+  const el = document.getElementById("customersRelaxedPanel");
+  if (!el) return;
+  const t = relaxedTotalsMS();
+  const n = v => Number(v || 0).toLocaleString("en-IN");
+  const card = (icon, label, value, accent) => `
+    <div style="flex:1 1 200px; border:1px solid ${accent ? "var(--copper)" : "var(--line)"}; border-radius:10px; padding:12px 14px;">
+      <div style="font-size:0.85rem; opacity:0.75;">${icon} ${label}</div>
+      <div style="font-size:${accent ? "2rem" : "1.6rem"}; font-weight:800; margin-top:2px; ${accent ? "color:var(--copper);" : ""}">${value}</div>
+    </div>`;
+  el.innerHTML = `
+    <div class="panel-title">Customers Relaxed</div>
+    <p class="panel-help">All time. One paid session that actually ran counts as one customer relaxed.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:10px;">
+      ${card("\u{1F60C}", "Total Customers Relaxed", n(t.total), true)}
+      ${card("\u{1FA91}", "Full Body Relaxation", n(t.fullBody))}
+      ${card("\u{1F9B5}", "Leg Relaxation", n(t.leg))}
+    </div>`;
+}
+
 /* ========================= ANALYTICS TAB (view only) =========================
    Reuses the same all-time session data already loaded for Mall Share -- no extra Firestore
    reads if that tab's been opened once already this session. */
@@ -1858,7 +2068,12 @@ async function renderAnalyticsTab(){
     </div>`;
   }
 
-  el.innerHTML = (revenuePanel + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
+  // Optional panels -- each stays hidden until its key is set to true in the visibility settings file.
+  const salesTrendPanelHtml = isExplicitlyOn("analytics.salesTrend") ? `<div class="panel" id="salesTrendPanel"></div>` : "";
+  const relaxedPanelHtml = isExplicitlyOn("analytics.customersRelaxed") ? `<div class="panel" id="customersRelaxedPanel"></div>` : "";
+  el.innerHTML = (revenuePanel + salesTrendPanelHtml + relaxedPanelHtml + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
+  initSalesTrendPanel();
+  initCustomersRelaxedPanel();
 }
 
 /* ========================= BOOK TAB (staff/admin, when mobileBookingEnabled) =========================
