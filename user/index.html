@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RRG Lounge — Mall Admin Portal (Chrompet)</title>
+<title>RRG Lounge — Mall Admin Portal</title>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
@@ -116,12 +116,12 @@
 // real login (Staff ID + PIN) succeeds AND the account's role is verified to be mall_admin --
 // unlike the older dashboard file, there is no bootstrap/auto-sign-in of any kind here.
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyD4n3zJu8-A-6FLiqH7I_go_OnykDOamck",
-  authDomain: "rrg-lounge-os-tcs.firebaseapp.com",
-  projectId: "rrg-lounge-os-tcs",
-  storageBucket: "rrg-lounge-os-tcs.firebasestorage.app",
-  messagingSenderId: "101978979870",
-  appId: "1:101978979870:web:7ea4f87c04a42879cdf80f"
+  apiKey: "AIzaSyA6BnYGNx3hKNcSxHgN9Wpyz6LkB_MUKq4",
+  authDomain: "rrg-lounge-os.firebaseapp.com",
+  projectId: "rrg-lounge-os",
+  storageBucket: "rrg-lounge-os.firebasestorage.app",
+  messagingSenderId: "1071966836969",
+  appId: "1:1071966836969:web:e433f87d2d05748e573878"
 };
 firebase.initializeApp(FIREBASE_CONFIG);
 const fbAuth = firebase.auth();
@@ -161,7 +161,7 @@ function tryLoadImage(imgEl, basePath, extIndex){
 
 async function loadMallsList(){
   try {
-    const res = await fetch("/malls-tcs.json", { cache: "no-cache" });
+    const res = await fetch("/malls.json", { cache: "no-cache" });
     if (!res.ok) throw new Error("no malls.json");
     mallsList = await res.json();
   } catch (e) {
@@ -178,7 +178,7 @@ async function loadMallsList(){
 let visibilityConfig = {};
 async function loadVisibilityConfig(){
   try {
-    const res = await fetch("/mall-admin-visibility-tcs.json", { cache: "no-cache" });
+    const res = await fetch("/mall-admin-visibility.json", { cache: "no-cache" });
     if (!res.ok) throw new Error("no visibility config");
     visibilityConfig = await res.json();
   } catch (e) {
