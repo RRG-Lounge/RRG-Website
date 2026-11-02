@@ -596,12 +596,12 @@
   // ---------- Customers Relaxed band ----------
   // Each branch publishes three numbers (total, full body, leg) to a tiny public record in its own Firebase
   // project: publicStats/relaxed. This page reads those records, adds the branches together and shows each
-  // figure rounded DOWN to the last full 500 it has passed: "10,000+" until the real count goes past 10,500,
-  // then "10,500+", then "11,000+" once it goes past 11,000, and so on. Because it only ever rounds down, the
+  // figure rounded DOWN to the last full 100 it has passed: "10,000+" until the real count goes past 10,100,
+  // then "10,100+", then "10,200+" once it goes past 10,200, and so on. Because it only ever rounds down, the
   // band can never overstate. stats.json lists the branches (id, projectId, apiKey -- the same public web
   // config the other pages use); the total/fullBody/leg numbers in it are only a FALLBACK, used for a branch
   // whose live record can't be read. The band stays hidden until there is something true to show.
-  const RELAX_STEP = 500;
+  const RELAX_STEP = 100;
   function roundDownBy500(count) {
     const n = Number(count) || 0;
     return n > RELAX_STEP ? Math.floor((n - 1) / RELAX_STEP) * RELAX_STEP : 0;
