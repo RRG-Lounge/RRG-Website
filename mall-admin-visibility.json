@@ -9,11 +9,13 @@
     "enabled": true
   },
   "mdshare": {
-    "enabled": true,
-    "overview": true,
-    "revenueShareReport": true,
-    "settlementReport": true
-  },
+  "enabled": true,
+  "overview": true,
+  "revenueShareReport": true,
+  "settlementReport": true,
+  "packageBreakup": true,
+  "packageAdjustmentsLine": false
+},
   "analytics": {
   "enabled": true,
   "revenue": true,
