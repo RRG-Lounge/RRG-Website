@@ -1289,6 +1289,7 @@ function computeMdSummary(from, to){
     payAgg[s.method] += rev;
   });
 
+  let adjustmentsNet = 0;
   const seenAdjInvoices = new Set();
   rows.forEach(s => {
     if (!s.invoiceNo || seenAdjInvoices.has(s.invoiceNo)) return;
@@ -1296,16 +1297,14 @@ function computeMdSummary(from, to){
     if (!adj) return;
     seenAdjInvoices.add(s.invoiceNo);
     totalRevenue += adj.amount;
-    if (!pkgAgg[adj.label]) { pkgAgg[adj.label] = { count: 0, revenue: 0 }; pkgOrder.push(adj.label); }
-    pkgAgg[adj.label].count++;
-    pkgAgg[adj.label].revenue += adj.amount;
+    adjustmentsNet += adj.amount; // kept OUT of pkgAgg on purpose: an adjustment's own note must never appear as a package
     payAgg[adj.method] = (payAgg[adj.method] || 0) + adj.amount;
   });
 
   const mdSharePercent = liveConfig.mdSharePercent;
   const mdShare = totalRevenue * (mdSharePercent / 100);
   const ownerShare = totalRevenue - mdShare;
-  return { totalSessions: rows.length, unitsUsed, totalRevenue, pkgAgg, pkgOrder, payAgg, mdSharePercent, mdShare, ownerShare };
+  return { totalSessions: rows.length, unitsUsed, totalRevenue, pkgAgg, pkgOrder, adjustmentsNet, payAgg, mdSharePercent, mdShare, ownerShare };
 }
 
 // Same money math the dashboard uses -- recorded amounts, not a bank-reconciled "actual" figure
@@ -1322,7 +1321,7 @@ function paymentMethodFinal(rec){
 }
 function buildAdhocRec(from, to){
   const s = computeMdSummary(from, to);
-  return { periodFrom: from, periodTo: to, totalSessions: s.totalSessions, unitsUsed: s.unitsUsed, pkgOrder: s.pkgOrder, pkgAgg: s.pkgAgg, payAgg: s.payAgg, totalRevenue: s.totalRevenue, mdSharePercent: s.mdSharePercent, mdShareAmount: s.mdShare, ownerShareAmount: s.ownerShare };
+  return { periodFrom: from, periodTo: to, totalSessions: s.totalSessions, unitsUsed: s.unitsUsed, pkgOrder: s.pkgOrder, pkgAgg: s.pkgAgg, adjustmentsNet: s.adjustmentsNet, payAgg: s.payAgg, totalRevenue: s.totalRevenue, mdSharePercent: s.mdSharePercent, mdShareAmount: s.mdShare, ownerShareAmount: s.ownerShare };
 }
 function mallShareForRange(from, to){
   if (from > to) return 0;
@@ -1394,6 +1393,18 @@ function addPdfLogos(doc, y, pageWidth){
   return used ? y + logoH + 5 : y;
 }
 
+// Package-by-package rows for the exported statement (shown only when mdshare.packageBreakup is on in the
+// visibility settings file). REAL packages only: an invoice adjustment's own note (typo fixes, duplicates,
+// cancellations) is kept out of this list so it never shows up as if it were a package. Because adjustments
+// are still inside Total Revenue, on a day that has one the package revenues add up to the total plus/minus
+// that net adjustment (Sessions always add up). If you'd rather close that gap visibly, turn on
+// mdshare.packageAdjustmentsLine to add ONE neutral "Other adjustments (net)" line -- never the individual notes.
+function packageRowsForExport(rec){
+  const rows = (rec.pkgOrder || []).map(k => ({ name: k, count: rec.pkgAgg[k].count, revenue: rec.pkgAgg[k].revenue }));
+  const net = Math.round(rec.adjustmentsNet || 0);
+  if (net !== 0 && isExplicitlyOn("mdshare.packageAdjustmentsLine")) rows.push({ name: "Other adjustments (net)", count: "", revenue: net });
+  return rows;
+}
 function exportRevenueShareStatementPDF(rec){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });
@@ -1409,11 +1420,20 @@ function exportRevenueShareStatementPDF(rec){
   if (liveConfig.mdName) { doc.text(`Prepared for: ${pdfSafeText(liveConfig.mdName)}`, 14, y); y += 5; }
   y += 3;
 
-  // Deliberately no package-by-package breakdown -- that's specifically where internal
-  // reconciliation adjustments (typo fixes, cancellations, etc.) leaked through by their own raw
-  // label. Payment method breakdown is fine to keep; every figure below already has any
-  // adjustments folded in, same as everywhere else in this app.
+  // The package-by-package table is optional (mdshare.packageBreakup in the visibility settings file). It lists
+  // real packages only -- see packageRowsForExport() for why adjustment notes are kept out of it. Every figure
+  // below already has any adjustments folded in, same as everywhere else in this app.
   doc.autoTable({ startY: y, body: [["Units Used", String(rec.unitsUsed), "Total Sessions", String(rec.totalSessions)]], styles: { fontSize: 10 }, columnStyles: { 0: { fontStyle: "bold" }, 2: { fontStyle: "bold" } }, theme: "plain" });
+
+  if (isExplicitlyOn("mdshare.packageBreakup")) {
+    const pkgRows = packageRowsForExport(rec);
+    if (pkgRows.length) doc.autoTable({
+      startY: doc.lastAutoTable.finalY + 3,
+      head: [["Package", "Sessions", "Revenue"]],
+      body: pkgRows.map(r => [pdfSafeText(r.name), String(r.count), fmtMoneyPDF(r.revenue)]),
+      styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }
+    });
+  }
 
   const fin = paymentMethodFinal(rec);
   doc.autoTable({
@@ -1443,6 +1463,13 @@ function exportRevenueShareStatementExcel(rec){
     [`Period: ${rec.periodFrom} to ${rec.periodTo}`], [],
     ["Units Used", rec.unitsUsed, "Total Sessions", rec.totalSessions], []
   ]);
+  if (isExplicitlyOn("mdshare.packageBreakup")) {
+    const pkgRows = packageRowsForExport(rec);
+    if (pkgRows.length) {
+      XLSX.utils.sheet_add_json(ws, pkgRows.map(r => ({ Package: r.name, Sessions: r.count, Revenue: r.revenue })), { origin: -1 });
+      XLSX.utils.sheet_add_aoa(ws, [[]], { origin: -1 });
+    }
+  }
   XLSX.utils.sheet_add_json(ws, ["UPI","Cash","Card","Pending"].map(m => ({ "Payment Method": m, Amount: rec.payAgg[m]||0 })), { origin: -1 });
   XLSX.utils.sheet_add_aoa(ws, [
     [],
