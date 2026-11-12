@@ -128,7 +128,7 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [] };
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [], adminPhoneTools: {} };
 let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [], queueRows = [];
 let unsubs = [];
 let currentTab = "operations";
@@ -581,7 +581,11 @@ function computeVisibleTabs(){
   } else {
     allTabs = [ { id: "queue", label: "Queue" } ];
     if (liveConfig.mobileBookingEnabled) allTabs.push({ id: "book", label: "Book" });
-    allTabs.push({ id: "operations", label: "Operations" }, { id: "receipts", label: "Receipts" }, { id: "settings", label: "Settings" });
+    allTabs.push({ id: "operations", label: "Operations" }, { id: "receipts", label: "Receipts" });
+    // Admin-only tools, each switched on from the dashboard's Settings ("Admin tools on the phone page")
+    const apt = liveConfig.adminPhoneTools || {};
+    if (currentUserRole === "admin" && (apt.dailySummary || apt.revenueShare)) allTabs.push({ id: "mdshare", label: "Mall Share" });
+    allTabs.push({ id: "settings", label: "Settings" });
   }
   // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
   // control what Mall Admin sees; it was never meant to also gate your own or staff's tools.
@@ -665,7 +669,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [] };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {} };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
@@ -1146,6 +1150,7 @@ async function renderReceiptsTab(){
         <button class="btn btn-outline btn-small" id="rTodayBtn">Today Only</button>
         <button class="btn btn-outline btn-small" id="rExcelBtn">Excel</button>
         <button class="btn btn-outline btn-small" id="rPdfBtn">PDF</button>
+        ${(currentUserRole === "admin" && (liveConfig.adminPhoneTools || {}).receiptsZip) ? `<button class="btn btn-primary btn-small" id="rZipBtn">ZIP of these receipts</button>` : ""}
       </div>
       <div class="table-scroll"><table class="data-table" id="rTable"><tbody><tr><td>Loading\u2026</td></tr></tbody></table></div>
     </div>`;
@@ -1156,6 +1161,7 @@ async function renderReceiptsTab(){
   document.getElementById("rFrom").addEventListener("change", e => { receiptsFilterFrom = e.target.value; refetchAndRenderReceipts(); });
   document.getElementById("rTo").addEventListener("change", e => { receiptsFilterTo = e.target.value; refetchAndRenderReceipts(); });
   document.getElementById("rSearch").addEventListener("input", e => { receiptsSearchInvoice = e.target.value; renderReceiptsTable(); });
+  if (document.getElementById("rZipBtn")) document.getElementById("rZipBtn").addEventListener("click", (e) => zipShownReceipts(e.currentTarget));
   document.getElementById("rTodayBtn").addEventListener("click", () => {
     receiptsFilterYear = ""; receiptsFilterMonth = ""; receiptsFilterFrom = todayS; receiptsFilterTo = todayS;
     document.getElementById("rYear").value = ""; document.getElementById("rMonth").value = "";
@@ -1510,6 +1516,200 @@ function exportSettlementReportExcel(from, to, settlements){
   XLSX.writeFile(wb, `Settlement_Report_${from}_to_${to}.xlsx`);
 }
 
+
+/* ---------------------- Admin tools on the phone page (Build 3) ----------------------
+   Shown only to role "admin", each behind its own switch in the dashboard's Settings
+   (meta/config.adminPhoneTools). Staff and Mall Admin never see any of this. */
+
+// Daily Performance Summary -- the exact text the dashboard's Mall Share tab builds (same figures:
+// paymentMethodFinal + computeMdSummary are this page's copies of the dashboard calculations).
+function dailyPerformanceSummaryText(date){
+  const monthStart = date.slice(0, 7) + "-01";
+  const dayPm = paymentMethodFinal(buildAdhocRec(date, date));
+  const daySummary = computeMdSummary(date, date);
+  const cumPm = paymentMethodFinal(buildAdhocRec(monthStart, date));
+  const cumSummary = computeMdSummary(monthStart, date);
+  const dateObj = new Date(date);
+  const dayLabel = dateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const cumFromLabel = new Date(monthStart).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  const cumToLabel = dateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  const mdPct = liveConfig.mdSharePercent;
+  return `Greetings Sir,
+
+Please find RRG Lounge's performance summary:
+
+Today's (${dayLabel}) Performance
+
+Revenue: ${fmtMoney(dayPm.finalTotalRevenue)}
+Sessions: ${daySummary.totalSessions}
+Units Utilized: ${daySummary.unitsUsed}
+Mall Share (${mdPct}%): ${fmtMoney(dayPm.finalMdShare)}
+
+Cumulative Performance (${cumFromLabel} \u2013 ${cumToLabel})
+
+Revenue: ${fmtMoney(cumPm.finalTotalRevenue)}
+Sessions: ${cumSummary.totalSessions}
+Mall Share (${mdPct}%): ${fmtMoney(cumPm.finalMdShare)}
+
+Thank you.`;
+}
+function wireDailyPerformanceSummary(){
+  const out = document.getElementById("dpsOutput"), dateEl = document.getElementById("dpsDate");
+  if (!out || !dateEl) return;
+  const show = () => { out.value = dailyPerformanceSummaryText(dateEl.value || todayStr()); };
+  show();
+  dateEl.addEventListener("change", show);
+  if (dateEl.showPicker) dateEl.addEventListener("click", () => { try { dateEl.showPicker(); } catch (_) {} });
+  document.getElementById("dpsCopyBtn").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(out.value); } catch (_) { out.select(); document.execCommand("copy"); }
+    const b = document.getElementById("dpsCopyBtn"); b.textContent = "Copied!"; setTimeout(() => { b.textContent = "Copy"; }, 1500);
+  });
+  document.getElementById("dpsShareBtn").addEventListener("click", async () => {
+    if (navigator.share) { try { await navigator.share({ text: out.value }); return; } catch (e) { if (e && e.name === "AbortError") return; } }
+    try { await navigator.clipboard.writeText(out.value); alert("Sharing isn't available here \u2014 the text was copied instead."); } catch (_) { out.select(); }
+  });
+}
+
+// Receipts ZIP: every bill in the Receipts list currently shown, one PDF each, in one .zip.
+// The PDFs are this page's own receipt PDF (the same one its per-bill "PDF" button makes).
+async function receiptPdfBytes(sale){
+  const api = window.jspdf.jsPDF.API, orig = api.save;
+  let bytes = null, name = null;
+  api.save = function(n){ bytes = new Uint8Array(this.output("arraybuffer")); name = n; return this; };
+  try { await exportReceiptPDFSimple(sale); } finally { api.save = orig; }
+  return { name: name || ((sale.invoiceNo || "Receipt").replace(/[^\w-]/g, "_") + ".pdf"), bytes };
+}
+async function shareOrDownloadFile(blob, filename, mime){
+  const file = new File([blob], filename, { type: mime });
+  if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: filename }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  const url = URL.createObjectURL(blob), a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+async function zipShownReceipts(btn){
+  const invoices = currentFilteredInvoices();
+  if (!invoices.length) { alert("No receipts in the list to zip."); return; }
+  const label = (receiptsFilterFrom === receiptsFilterTo) ? receiptsFilterFrom : `${receiptsFilterFrom}_to_${receiptsFilterTo}`;
+  const old = btn.textContent; btn.disabled = true;
+  try {
+    const files = [];
+    for (let i = 0; i < invoices.length; i++) {
+      btn.textContent = `Making PDFs ${i + 1}/${invoices.length}\u2026`;
+      files.push(await receiptPdfBytes(invoiceToSaleObject(invoices[i])));
+    }
+    btn.textContent = "Zipping\u2026";
+    const zip = await buildZip(files);
+    await shareOrDownloadFile(zip, `RRG_Receipts_${label}.zip`, "application/zip");
+  } catch (e) { alert("Couldn't make the ZIP: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+function crc32(bytes){
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function dosDateTime(d){
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (Math.floor(d.getSeconds() / 2));
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  return { time, date };
+}
+// files: [{name, bytes: Uint8Array}]. Returns a Blob ready to download.
+// Deflates raw bytes using the browser's own built-in compressor (Chrome/Edge have supported
+// this since 2020) -- no compression library needed. "deflate-raw" specifically (not "deflate")
+// is the raw DEFLATE bitstream with no zlib header/trailer, which is exactly what the ZIP format
+// itself expects for a compression-method-8 entry.
+async function deflateRawBytes(bytes){
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function buildZip(files){
+  const { time, date } = dosDateTime(new Date());
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const canCompress = typeof CompressionStream !== "undefined";
+  for (const f of files) {
+    const nameBytes = new TextEncoder().encode(f.name);
+    const crc = crc32(f.bytes); // CRC-32 is always of the UNCOMPRESSED data, regardless of method
+    const uncompressedSize = f.bytes.length;
+
+    let storedBytes = f.bytes;
+    let method = 0; // 0 = stored (no compression)
+    if (canCompress) {
+      try {
+        const deflated = await deflateRawBytes(f.bytes);
+        if (deflated.length < uncompressedSize) { storedBytes = deflated; method = 8; } // 8 = deflate
+      } catch(e) { /* fall back to stored for this one file */ }
+    }
+    const compressedSize = storedBytes.length;
+
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0, true);
+    local.setUint16(8, method, true);
+    local.setUint16(10, time, true);
+    local.setUint16(12, date, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, compressedSize, true);
+    local.setUint32(22, uncompressedSize, true);
+    local.setUint16(26, nameBytes.length, true);
+    local.setUint16(28, 0, true);
+    localParts.push(new Uint8Array(local.buffer), nameBytes, storedBytes);
+
+    const central = new DataView(new ArrayBuffer(46));
+    central.setUint32(0, 0x02014b50, true);
+    central.setUint16(4, 20, true);
+    central.setUint16(6, 20, true);
+    central.setUint16(8, 0, true);
+    central.setUint16(10, method, true);
+    central.setUint16(12, time, true);
+    central.setUint16(14, date, true);
+    central.setUint32(16, crc, true);
+    central.setUint32(20, compressedSize, true);
+    central.setUint32(24, uncompressedSize, true);
+    central.setUint16(28, nameBytes.length, true);
+    central.setUint16(30, 0, true);
+    central.setUint16(32, 0, true);
+    central.setUint16(34, 0, true);
+    central.setUint16(36, 0, true);
+    central.setUint32(38, 0, true);
+    central.setUint32(42, offset, true);
+    centralParts.push(new Uint8Array(central.buffer), nameBytes);
+
+    offset += 30 + nameBytes.length + compressedSize;
+  }
+  const centralStart = offset;
+  let centralSize = 0;
+  for (let i = 0; i < centralParts.length; i += 2) centralSize += centralParts[i].length + centralParts[i+1].length;
+
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(4, 0, true);
+  end.setUint16(6, 0, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, centralStart, true);
+  end.setUint16(20, 0, true);
+
+  return new Blob([...localParts, ...centralParts, new Uint8Array(end.buffer)], { type: "application/zip" });
+}
+
+
 async function renderMallShareTab(){
   const el = document.getElementById("mainContent");
   if (!el) return;
@@ -1523,7 +1723,20 @@ async function renderMallShareTab(){
   const earliest = dates[0] || todayStr();
   const todayS = todayStr();
 
+  const aptMs = liveConfig.adminPhoneTools || {};
+  const isAdminMs = currentUserRole === "admin";
+  const showDps = isAdminMs && !!aptMs.dailySummary;
+  const hideRs = isAdminMs && !aptMs.revenueShare; // Mall Admin always sees these, exactly as before
   el.innerHTML = `
+    ${showDps ? `<div class="panel">
+      <div class="panel-title">Daily Performance Summary</div>
+      <p class="panel-help">Same message as the dashboard's Mall Share tab. Pick a date, then Copy or Share.</p>
+      <div class="btn-group"><div class="filter-field">Date<input type="date" id="dpsDate" value="${todayS}" max="${todayS}"></div></div>
+      <textarea id="dpsOutput" readonly style="width:100%; min-height:300px; margin-top:10px; font-family:monospace; font-size:13px; padding:10px; border-radius:6px;"></textarea>
+      <button class="btn btn-primary btn-small" id="dpsCopyBtn" style="margin-top:8px;">Copy</button>
+      <button class="btn btn-outline btn-small" id="dpsShareBtn" style="margin-top:8px;">Share</button>
+    </div>` : ""}
+    <div style="${hideRs ? "display:none;" : ""}">
     <div class="panel">
       <div class="panel-title">Mall Share \u2014 Overview</div>
       <table class="data-table">
@@ -1562,7 +1775,9 @@ async function renderMallShareTab(){
       <button class="btn btn-primary btn-small" id="srExportPdfBtn">Export PDF</button>
       <button class="btn btn-outline btn-small" id="srExportExcelBtn">Export Excel</button>
     </div>
+    </div>
   `;
+  if (showDps) wireDailyPerformanceSummary();
 
   document.getElementById("msOverviewSettled").textContent = fmtMoney(settledAmountForRange(earliest, todayS));
   document.getElementById("msOverviewOutstanding").textContent = fmtMoney(unsettledAmountForRange(earliest, todayS));
