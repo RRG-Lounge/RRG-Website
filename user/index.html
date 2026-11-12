@@ -1054,7 +1054,7 @@ function printReceiptSimple(sale){
 
 function exportReceiptPDFSimple(sale){
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a5" });
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a5" });
   const rightX = 138; let y = 14;
   doc.setFont("courier","bold"); doc.setFontSize(13);
   doc.text(pdfSafeText(liveConfig.businessName || "RRG Lounge"), 74, y, { align: "center" }); y += 8;
@@ -1105,7 +1105,7 @@ function exportReceiptsPDFBulk(){
   const invoices = currentFilteredInvoices();
   if (!invoices.length) { alert("No receipts match the current filter."); return; }
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" });
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4", orientation: "landscape" });
   doc.setFontSize(16);
   doc.text(`${pdfSafeText(liveConfig.businessName || "RRG Lounge")} \u2014 Receipts`, 14, 16);
   doc.setFontSize(10);
@@ -1415,7 +1415,7 @@ function packageRowsForExport(rec){
 }
 function exportRevenueShareStatementPDF(rec){
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4" });
   const pageWidth = 210;
   let y = addPdfLogos(doc, 12, pageWidth);
   doc.setFontSize(15); doc.setFont("helvetica","bold");
@@ -1490,7 +1490,7 @@ function exportRevenueShareStatementExcel(rec){
 }
 function exportSettlementReportPDF(from, to, settlements){
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4" });
   const pageWidth = 210;
   let y = addPdfLogos(doc, 12, pageWidth);
   doc.setFontSize(16); doc.setFont("helvetica","bold");
@@ -1518,6 +1518,455 @@ function exportSettlementReportExcel(from, to, settlements){
   XLSX.writeFile(wb, `Settlement_Report_${from}_to_${to}.xlsx`);
 }
 
+
+/* ---------------------- Admin: Revenue Share Statement, same as the dashboard (Build 3, part 3) ----------------------
+   Admin login only. The Mall Admin login keeps its own simpler statement above, unchanged.
+   Everything below is the dashboard's own statement code, copied across with only these swaps:
+   CONFIG -> admStmtCfg (read fresh from meta/config, so it carries the logos too), the dashboard's
+   caches -> this page's Mall Share data (mallShareSessions / Adjustments / Splits / Settlements, which
+   are the same Firestore collections) plus cashCounts, and doc.save -> the iPhone Share sheet.
+   Mall Share owed / settled / status reuse this page's mallShareForRange etc.: those work off the
+   RECORDED payment totals, exactly as the dashboard's do, so the figures are the same. */
+let admStmtCfg = null, admCashCounts = [];
+async function loadAdminStatementData(){
+  const [cfgDoc, ccSnap] = await Promise.all([
+    fsDb.collection("meta").doc("config").get(),
+    fsDb.collection("cashCounts").get()
+  ]);
+  const v = (cfgDoc.data() || {}).value || {};
+  admStmtCfg = {
+    businessName: liveConfig.businessName, mdName: liveConfig.mdName,
+    gstEnabled: liveConfig.gstEnabled, gstRate: liveConfig.gstRate,
+    logoDataUrl: v.logoDataUrl || "", mdLogoDataUrl: v.mdLogoDataUrl || ""
+  };
+  admCashCounts = ccSnap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+}
+
+// Same as the dashboard's computeMdSummary: an invoice adjustment shows as its own labelled line
+// in the Package table (the dashboard's statement does this; the Mall Admin version here doesn't).
+function admComputeMdSummary(from, to){
+  const rows = mallShareSessions.filter(s => s.date >= from && s.date <= to);
+  const unitsUsed = new Set(rows.map(s => s.chairName).filter(Boolean)).size;
+  let totalRevenue = rows.reduce((a,s) => a + effectiveRevenue(s), 0);
+  const pkgAgg = {}; const pkgOrder = [];
+  rows.forEach(s => {
+    const key = cartItemName(s.chairName, s.packageLabel, s.unitType);
+    if (!pkgAgg[key]) { pkgAgg[key] = { count: 0, revenue: 0 }; pkgOrder.push(key); }
+    pkgAgg[key].count++;
+    pkgAgg[key].revenue += effectiveRevenue(s);
+  });
+  const payAgg = { UPI: 0, Cash: 0, Card: 0, Pending: 0 };
+  const seenSplitInvoices = new Set();
+  rows.forEach(s => {
+    const rev = effectiveRevenue(s);
+    if (rev <= 0) return;
+    if (s.method === "Split") {
+      if (!s.invoiceNo || seenSplitInvoices.has(s.invoiceNo)) return;
+      seenSplitInvoices.add(s.invoiceNo);
+      const split = msSplitFor(s.invoiceNo);
+      if (split) split.splits.forEach(row => { payAgg[row.method] = (payAgg[row.method] || 0) + row.amount; });
+      return;
+    }
+    if (!(s.method in payAgg)) payAgg[s.method] = 0;
+    payAgg[s.method] += rev;
+  });
+  const seenAdjInvoices = new Set();
+  rows.forEach(s => {
+    if (!s.invoiceNo || seenAdjInvoices.has(s.invoiceNo)) return;
+    const adj = msAdjustmentFor(s.invoiceNo);
+    if (!adj) return;
+    seenAdjInvoices.add(s.invoiceNo);
+    totalRevenue += adj.amount;
+    if (!pkgAgg[adj.label]) { pkgAgg[adj.label] = { count: 0, revenue: 0 }; pkgOrder.push(adj.label); }
+    pkgAgg[adj.label].count++;
+    pkgAgg[adj.label].revenue += adj.amount;
+    payAgg[adj.method] = (payAgg[adj.method] || 0) + adj.amount;
+  });
+  const mdSharePercent = liveConfig.mdSharePercent;
+  const mdShare = totalRevenue * (mdSharePercent / 100);
+  return { totalSessions: rows.length, unitsUsed, totalRevenue, pkgAgg, pkgOrder, payAgg, mdSharePercent, mdShare, ownerShare: totalRevenue - mdShare };
+}
+
+function admSurchargeOf(s){ return (s.cardSurcharge > 0 && !(s.status === "cancelled" && s.refunded)) ? s.cardSurcharge : 0; }
+function admCardSurchargeForDate(dateStr){ return mallShareSessions.reduce((a, x) => x.date === dateStr ? a + admSurchargeOf(x) : a, 0); }
+function admReconciliationStatusForDate(dateStr){
+  const counts = admCashCounts.filter(c => c.date === dateStr);
+  const opening = counts.find(c => c.type === "opening");
+  const closing = counts.find(c => c.type === "closing");
+  const upi = counts.find(c => c.type === "upiReceived");
+  const card = counts.find(c => c.type === "cardReceived");
+  return { date: dateStr, closingDone: !!closing, upiDone: !!upi, ok: !!closing && !!upi, opening, closing, upi, card };
+}
+// Dashboard's computeCashReconciliationForPeriod, unchanged apart from the data source.
+function admComputeCashReconciliationForPeriod(from, to){
+  const dates = [...new Set(mallShareSessions.filter(s => s.date >= from && s.date <= to).map(s => s.date))].sort();
+  const statuses = dates.map(admReconciliationStatusForDate);
+  const unreconciledDates = statuses.filter(s => !s.ok).map(s => s.date);
+  const allReconciled = dates.length > 0 && unreconciledDates.length === 0;
+  const openingDenomTotals = {}, denomTotals = {};
+  CASH_DENOMS.forEach(d => { openingDenomTotals[d] = 0; denomTotals[d] = 0; });
+  let openingTotal = 0, cashTotal = 0, cashVarianceTotal = 0, upiActualTotal = 0, upiVarianceTotal = 0;
+  if (allReconciled) {
+    statuses.forEach(s => {
+      const openDenoms = (s.opening && s.opening.denominations) || {};
+      const closeDenoms = (s.closing && s.closing.denominations) || {};
+      CASH_DENOMS.forEach(d => {
+        openingDenomTotals[d] += parseInt(openDenoms[d], 10) || 0;
+        denomTotals[d] += parseInt(closeDenoms[d], 10) || 0;
+      });
+      openingTotal += (s.opening && s.opening.total) || 0;
+      cashTotal += (s.closing && s.closing.total) || 0;
+      cashVarianceTotal += (s.closing && s.closing.variance) || 0;
+      upiActualTotal += (s.upi && s.upi.total) || 0;
+      upiVarianceTotal += (s.upi && s.upi.variance) || 0;
+    });
+  }
+  let cardActualTotal = 0, cardVarianceTotal = 0, cardDataAvailable = false;
+  statuses.forEach(s => {
+    if (s.card) { cardActualTotal += (s.card.total || 0) - admCardSurchargeForDate(s.date); cardVarianceTotal += s.card.variance || 0; cardDataAvailable = true; }
+  });
+  return { dates, unreconciledDates, allReconciled, openingDenomTotals, denomTotals, openingTotal, cashTotal, cashVarianceTotal, upiActualTotal, upiVarianceTotal, cardActualTotal, cardVarianceTotal, cardDataAvailable };
+}
+function admBuildAdhocRec(from, to){
+  const s = admComputeMdSummary(from, to);
+  const recon = admComputeCashReconciliationForPeriod(from, to);
+  return {
+    periodFrom: from, periodTo: to,
+    totalSessions: s.totalSessions, unitsUsed: s.unitsUsed,
+    pkgOrder: s.pkgOrder, pkgAgg: s.pkgAgg, payAgg: s.payAgg,
+    totalRevenue: s.totalRevenue, mdSharePercent: s.mdSharePercent,
+    mdShareAmount: s.mdShare, ownerShareAmount: s.ownerShare,
+    cashRecon: { allReconciled: recon.allReconciled, unreconciledDates: recon.unreconciledDates, openingDenomTotals: recon.openingDenomTotals, denomTotals: recon.denomTotals, openingTotal: recon.openingTotal, cashTotal: recon.cashTotal, cashVarianceTotal: recon.cashVarianceTotal, upiActualTotal: recon.upiActualTotal, upiVarianceTotal: recon.upiVarianceTotal, cardActualTotal: recon.cardActualTotal, cardVarianceTotal: recon.cardVarianceTotal, cardDataAvailable: recon.cardDataAvailable },
+    reconciliationNote: { reasonTag: "", detail: "" }
+  };
+}
+// Dashboard's paymentMethodReconRows: Recorded vs Actual vs Variance; money figures from Recorded.
+function admPaymentMethodReconRows(rec){
+  const cr = rec.cashRecon || {};
+  const recordedOf = (m) => (rec.payAgg && rec.payAgg[m]) || 0;
+  const upiRecorded = recordedOf("UPI"), cashRecorded = recordedOf("Cash"), cardRecorded = recordedOf("Card"), pendingRecorded = recordedOf("Pending");
+  const upiActual = cr.allReconciled ? (cr.upiActualTotal || 0) : upiRecorded;
+  const cashActual = cr.allReconciled ? (cashRecorded + (cr.cashVarianceTotal || 0)) : cashRecorded;
+  const cardActual = cr.cardDataAvailable ? (cr.cardActualTotal || 0) : cardRecorded;
+  const rows = [
+    { method: "UPI", recorded: upiRecorded, actual: upiActual },
+    { method: "Cash", recorded: cashRecorded, actual: cashActual },
+    { method: "Card", recorded: cardRecorded, actual: cardActual },
+    { method: "Pending", recorded: pendingRecorded, actual: pendingRecorded }
+  ].map(r => Object.assign(r, { variance: r.actual - r.recorded }));
+  const totalRecorded = rows.reduce((a, r) => a + r.recorded, 0);
+  const totalActual = rows.reduce((a, r) => a + r.actual, 0);
+  const finalTotalRevenue = totalRecorded;
+  const gstRegistered = !!admStmtCfg.gstEnabled;
+  const gstRate = admStmtCfg.gstRate || 0;
+  const baseRevenue = gstRegistered ? finalTotalRevenue / (1 + gstRate / 100) : finalTotalRevenue;
+  const gstAmount = gstRegistered ? finalTotalRevenue - baseRevenue : 0;
+  const finalMdShare = baseRevenue * (rec.mdSharePercent / 100);
+  return { rows, totalRecorded, totalActual, totalVariance: totalActual - totalRecorded, finalTotalRevenue, gstRegistered, gstRate, baseRevenue, gstAmount, finalMdShare, finalOwnerShare: baseRevenue - finalMdShare };
+}
+function admFyBoundsFor(dateStr){
+  const d = dateStr ? new Date(dateStr) : new Date();
+  const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
+  return { fyStartYear: y, from: `${y}-04-01`, to: `${y+1}-03-31`, label: `FY${y}-${String(y+1).slice(-2)}` };
+}
+// Dashboard's buildCumulativeRollupRows (page 2). Total Revenue per row = the recorded total, as there.
+function admBuildCumulativeRollupRows(){
+  const dates = mallShareSessions.map(s => s.date).sort();
+  if (!dates.length) return [];
+  const currentFY = admFyBoundsFor();
+  const rows = [];
+  const revenueOf = (from, to) => paymentMethodFinal(buildAdhocRec(from, to)).finalTotalRevenue;
+  for (let y = admFyBoundsFor(dates[0]).fyStartYear; y < currentFY.fyStartYear; y++) {
+    const from = `${y}-04-01`, to = `${y+1}-03-31`;
+    const totalRevenue = revenueOf(from, to);
+    const mallShare = mallShareForRange(from, to);
+    if (totalRevenue === 0 && mallShare === 0) continue;
+    const settled = settledAmountForRange(from, to);
+    rows.push({ label: `FY${y}-${String(y+1).slice(-2)}`, isYearRow: true, totalRevenue, mallShare, settled, balance: mallShare - settled, sortKey: to });
+  }
+  const latestDate = dates[dates.length - 1];
+  const latest = new Date(latestDate > todayStr() ? todayStr() : latestDate);
+  let cursor = new Date(currentFY.from);
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  while (cursor <= latest) {
+    const mFrom = todayStr(cursor);
+    const mTo = todayStr(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0));
+    const totalRevenue = revenueOf(mFrom, mTo);
+    const mallShare = mallShareForRange(mFrom, mTo);
+    if (totalRevenue > 0 || mallShare > 0) {
+      const settled = settledAmountForRange(mFrom, mTo);
+      rows.push({ label: `${monthNames[cursor.getMonth()]} ${cursor.getFullYear()}`, isYearRow: false, totalRevenue, mallShare, settled, balance: mallShare - settled, sortKey: mTo });
+    }
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+  rows.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
+  return rows;
+}
+function admLoadImageDims(dataUrl){
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+function admPdfImageFormat(dataUrl){
+  const m = /^data:image\/(\w+);base64/.exec(dataUrl || "");
+  if (!m) return "PNG";
+  const ext = m[1].toUpperCase();
+  return ext === "JPG" ? "JPEG" : ext;
+}
+
+// The dashboard's exportRevenueShareStatementPDF, line for line; returns the finished doc.
+async function admBuildRevenueShareStatementPDF(rec){
+  const CONFIG = admStmtCfg;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4" });
+  const pageWidth = 210;
+  let y = 12;
+  const logoH = 13;
+  if (CONFIG.logoDataUrl) {
+    const dims = await admLoadImageDims(CONFIG.logoDataUrl);
+    if (dims && dims.w > 0) {
+      const w = logoH * (dims.w / dims.h);
+      doc.addImage(CONFIG.logoDataUrl, admPdfImageFormat(CONFIG.logoDataUrl), 14, y - 3, w, logoH);
+    }
+  }
+  if (CONFIG.mdLogoDataUrl) {
+    const dims = await admLoadImageDims(CONFIG.mdLogoDataUrl);
+    if (dims && dims.w > 0) {
+      const w = logoH * (dims.w / dims.h);
+      doc.addImage(CONFIG.mdLogoDataUrl, admPdfImageFormat(CONFIG.mdLogoDataUrl), pageWidth - 14 - w, y - 3, w, logoH);
+    }
+  }
+  if (CONFIG.logoDataUrl || CONFIG.mdLogoDataUrl) y += logoH + 3; // logos drawn at y - 3 so they clear the title, same as the dashboard
+
+  doc.setFontSize(15);
+  doc.setFont("helvetica", "bold");
+  doc.text("Revenue Share Statement", 14, y);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text(pdfSafeText(CONFIG.businessName), pageWidth - 14, y, { align: "right" });
+  y += 6;
+
+  doc.setFontSize(9);
+  doc.text(`Period: ${dmyShort(rec.periodFrom)} to ${dmyShort(rec.periodTo)}`, 14, y);
+  doc.text(`Generated: ${dmy()} ${timeStr()}`, pageWidth - 14, y, { align: "right" });
+  y += 5;
+  if (CONFIG.mdName) { doc.text(`Prepared for: ${pdfSafeText(CONFIG.mdName)}`, 14, y); y += 5; }
+  y += 3;
+
+  doc.autoTable({
+    startY: y,
+    body: [["Units Used", String(rec.unitsUsed), "Total Sessions", String(rec.totalSessions)]],
+    styles: { fontSize: 10 },
+    columnStyles: { 0: { fontStyle: "bold" }, 2: { fontStyle: "bold" } },
+    theme: "plain"
+  });
+
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 3,
+    head: [["Package", "Sessions", "Revenue"]],
+    body: (rec.pkgOrder || []).map(k => [pdfSafeText(k), rec.pkgAgg[k].count, fmtMoneyPDF(rec.pkgAgg[k].revenue)]),
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }
+  });
+
+  const recon = admPaymentMethodReconRows(rec);
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 3,
+    head: [["Payment Method", "Recorded Amount", "Actual Amount", "Variance"]],
+    body: recon.rows.map(r => [r.method, fmtMoneyPDF(r.recorded), fmtMoneyPDF(r.actual), fmtMoneyPDF(r.variance)]),
+    foot: [["Total", fmtMoneyPDF(recon.totalRecorded), fmtMoneyPDF(recon.totalActual), fmtMoneyPDF(recon.totalVariance)]],
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [30,30,30], textColor: [230,190,80] },
+    footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" }
+  });
+  const pmNote = rec.reconciliationNote;
+  doc.setFontSize(9);
+  doc.setFont("helvetica", (pmNote && pmNote.reasonTag) ? "bold" : "italic");
+  doc.text(
+    (pmNote && pmNote.reasonTag)
+      ? `Possible Reason for Variance: ${pdfSafeText(pmNote.reasonTag)}${pmNote.detail ? " \u2014 " + pdfSafeText(pmNote.detail) : ""}`
+      : "Possible Reason for Variance: Staff entry mistake / wrong change / round-up by customer / short-over, etc.",
+    14, doc.lastAutoTable.finalY + 4, { maxWidth: pageWidth - 28 }
+  );
+
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 6,
+    body: [
+      [recon.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", fmtMoneyPDF(recon.finalTotalRevenue)],
+      ...(recon.gstRegistered ? [
+        [`GST (${recon.gstRate}%)`, fmtMoneyPDF(recon.gstAmount)],
+        ["Base Revenue (excl. GST)", fmtMoneyPDF(recon.baseRevenue)]
+      ] : []),
+      [`Mall Share (${rec.mdSharePercent}%${recon.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(recon.finalMdShare)],
+      [`RRG Lounge Share (${100-rec.mdSharePercent}%${recon.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(recon.finalOwnerShare)]
+    ],
+    styles: { fontSize: 11, fontStyle: "bold" },
+    theme: "plain"
+  });
+
+  let lastY = doc.lastAutoTable.finalY;
+  if (rec.cashRecon && rec.cashRecon.allReconciled) {
+    const openTotals = rec.cashRecon.openingDenomTotals || {};
+    const closeTotals = rec.cashRecon.denomTotals || {};
+    const openGrand = rec.cashRecon.openingTotal || 0;
+    const closeGrand = rec.cashRecon.cashTotal || 0;
+    doc.autoTable({
+      startY: doc.lastAutoTable.finalY + 8,
+      head: [["Cash Denomination", "Opening Count", "Opening Total", "Closing Count", "Closing Total", "Difference"]],
+      body: CASH_DENOMS.map(d => {
+        const oc = openTotals[d] || 0, cc = closeTotals[d] || 0;
+        return [`Rs.${d}`, String(oc), fmtMoneyPDF(oc * d), String(cc), fmtMoneyPDF(cc * d), fmtMoneyPDF((cc - oc) * d)];
+      }),
+      foot: [["Total", "", fmtMoneyPDF(openGrand), "", fmtMoneyPDF(closeGrand), fmtMoneyPDF(closeGrand - openGrand)]],
+      styles: { fontSize: 8, cellPadding: 1.5 },
+      headStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontSize: 7.5 },
+      footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" },
+      columnStyles: { 0: { fontStyle: "bold" } }
+    });
+    doc.setFontSize(7.5);
+    doc.setFont("helvetica", "normal");
+    lastY = doc.lastAutoTable.finalY + 5;
+    if (lastY > 280) { doc.addPage(); lastY = 20; }
+    doc.text(`The Difference total above should match the day's Cash revenue (${fmtMoneyPDF(rec.payAgg ? (rec.payAgg.Cash || 0) : 0)}); any gap is a real physical cash short/over, same as the Cash Register variance.`, 14, lastY, { maxWidth: pageWidth - 28 });
+  } else if (rec.cashRecon) {
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "italic");
+    lastY = doc.lastAutoTable.finalY + 8;
+    if (lastY > 280) { doc.addPage(); lastY = 20; }
+    doc.text(`Physical cash denomination breakdown not included \u2014 reconciliation pending for: ${rec.cashRecon.unreconciledDates.map(dmyShort).join(", ")}.`, 14, lastY, { maxWidth: pageWidth - 28 });
+  }
+
+  const fullySettled = isRangeFullySettled(rec.periodFrom, rec.periodTo);
+  const covering = fullySettled ? latestCoveringSettlement(rec.periodFrom, rec.periodTo) : null;
+  const statusLine = fullySettled && covering
+    ? `Revenue Settlement Status: SETTLED \u2014 ${pdfSafeText(covering.transferMethod || "")} on ${dmyShort(covering.transferDate)}${covering.transferReference ? " (Ref: " + pdfSafeText(covering.transferReference) + ")" : ""}`
+    : "Revenue Settlement Status: PENDING";
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "bold");
+  let statusY = lastY + 16;
+  if (statusY > 285) { doc.addPage(); statusY = 20; }
+  doc.text(statusLine, 14, statusY);
+
+  const rollupRows = admBuildCumulativeRollupRows();
+  if (rollupRows.length) {
+    doc.addPage();
+    let y2 = 16;
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Cumulative Performance", pageWidth/2, y2, { align: "center" }); y2 += 8;
+    doc.autoTable({
+      startY: y2,
+      head: [["Period", "Total Revenue", "Mall Share", "Settled", "Balance"]],
+      body: rollupRows.map(r => [r.label, fmtMoneyPDF(r.totalRevenue), fmtMoneyPDF(r.mallShare), fmtMoneyPDF(r.settled), fmtMoneyPDF(r.balance)]),
+      styles: { fontSize: 9, cellPadding: 2 },
+      headStyles: { fillColor: [30,30,30], textColor: [230,190,80] },
+      columnStyles: { 0: { fontStyle: "bold" } },
+      didParseCell: (data) => {
+        if (data.section === "body" && rollupRows[data.row.index] && rollupRows[data.row.index].isYearRow) {
+          data.cell.styles.fillColor = [245, 240, 225];
+          data.cell.styles.fontStyle = "bold";
+        }
+      }
+    });
+    const grand = rollupRows.reduce((a,r) => ({
+      totalRevenue: a.totalRevenue + r.totalRevenue, mallShare: a.mallShare + r.mallShare,
+      settled: a.settled + r.settled, balance: a.balance + r.balance
+    }), { totalRevenue: 0, mallShare: 0, settled: 0, balance: 0 });
+    doc.autoTable({
+      startY: doc.lastAutoTable.finalY + 2,
+      body: [["TOTAL", fmtMoneyPDF(grand.totalRevenue), fmtMoneyPDF(grand.mallShare), fmtMoneyPDF(grand.settled), fmtMoneyPDF(grand.balance)]],
+      styles: { fontSize: 9, cellPadding: 2, fontStyle: "bold" },
+      bodyStyles: { fillColor: [30,30,30], textColor: [230,190,80] },
+      theme: "plain"
+    });
+  }
+  return doc;
+}
+
+// The dashboard's exportRevenueShareStatementExcel, line for line; returns the workbook.
+function admBuildRevenueShareStatementExcel(rec){
+  const CONFIG = admStmtCfg;
+  const wb = XLSX.utils.book_new();
+  const headerRows = [
+    { A: "Revenue Share Statement" },
+    { A: CONFIG.businessName },
+    ...(CONFIG.mdName ? [{ A: `Prepared for: ${CONFIG.mdName}` }] : []),
+    { A: `Period: ${dmyShort(rec.periodFrom)} to ${dmyShort(rec.periodTo)}` },
+    { A: `Generated: ${dmy()} ${timeStr()}` },
+    {},
+    { A: "Units Used", B: rec.unitsUsed },
+    { A: "Total Sessions", B: rec.totalSessions },
+    {}
+  ];
+  const ws = XLSX.utils.json_to_sheet(headerRows, { skipHeader: true });
+  XLSX.utils.sheet_add_json(ws, (rec.pkgOrder || []).map(k => ({ Package: k, Sessions: rec.pkgAgg[k].count, Revenue: rec.pkgAgg[k].revenue })), { origin: -1 });
+  XLSX.utils.sheet_add_json(ws, [{}], { origin: -1, skipHeader: true });
+  const recon = admPaymentMethodReconRows(rec);
+  XLSX.utils.sheet_add_json(ws, recon.rows.map(r => ({
+    Method: r.method, "Recorded Amount": r.recorded, "Actual Amount": r.actual, Variance: r.variance
+  })), { origin: -1 });
+  XLSX.utils.sheet_add_json(ws, [
+    { Method: "Total", "Recorded Amount": recon.totalRecorded, "Actual Amount": recon.totalActual, Variance: recon.totalVariance }
+  ], { origin: -1, skipHeader: false });
+  const pmNote = rec.reconciliationNote;
+  XLSX.utils.sheet_add_json(ws, [
+    { A: (pmNote && pmNote.reasonTag) ? `Possible Reason for Variance: ${pmNote.reasonTag}${pmNote.detail ? " -- " + pmNote.detail : ""}` : "Possible Reason for Variance: Staff entry mistake / wrong change / round-up by customer / short-over, etc." }
+  ], { origin: -1, skipHeader: true });
+  XLSX.utils.sheet_add_json(ws, [
+    {},
+    { A: recon.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", B: recon.finalTotalRevenue },
+    ...(recon.gstRegistered ? [
+      { A: `GST (${recon.gstRate}%)`, B: recon.gstAmount },
+      { A: "Base Revenue (excl. GST)", B: recon.baseRevenue }
+    ] : []),
+    { A: `Mall Share (${rec.mdSharePercent}%${recon.gstRegistered ? " of base" : ""})`, B: recon.finalMdShare },
+    { A: `RRG Lounge Share (${100-rec.mdSharePercent}%${recon.gstRegistered ? " of base" : ""})`, B: recon.finalOwnerShare }
+  ], { origin: -1, skipHeader: true });
+  if (rec.cashRecon && rec.cashRecon.allReconciled) {
+    const openTotals = rec.cashRecon.openingDenomTotals || {};
+    const closeTotals = rec.cashRecon.denomTotals || {};
+    const openGrand = rec.cashRecon.openingTotal || 0;
+    const closeGrand = rec.cashRecon.cashTotal || 0;
+    XLSX.utils.sheet_add_json(ws, [{}, { A: "Cash Denomination" }], { origin: -1, skipHeader: true });
+    XLSX.utils.sheet_add_json(ws, CASH_DENOMS.map(d => {
+      const oc = openTotals[d] || 0, cc = closeTotals[d] || 0;
+      return { Denomination: `Rs.${d}`, "Opening Count": oc, "Opening Total": oc * d, "Closing Count": cc, "Closing Total": cc * d, Difference: (cc - oc) * d };
+    }), { origin: -1 });
+    XLSX.utils.sheet_add_json(ws, [
+      { A: "Total", C: openGrand, E: closeGrand, F: closeGrand - openGrand },
+      { A: `Note: Difference total should match the day's Cash revenue (${rec.payAgg ? (rec.payAgg.Cash || 0) : 0}); any gap is a real physical cash short/over, same as the Cash Register variance.` }
+    ], { origin: -1, skipHeader: true });
+  } else if (rec.cashRecon) {
+    XLSX.utils.sheet_add_json(ws, [{}, { A: `Physical cash denomination breakdown not included \u2014 reconciliation pending for: ${rec.cashRecon.unreconciledDates.join(", ")}.` }], { origin: -1, skipHeader: true });
+  }
+  XLSX.utils.sheet_add_json(ws, [
+    {},
+    { A: "Revenue Settlement Status", B: rec.status === "transferred"
+        ? `Transferred via ${rec.transferMethod} (Ref: ${rec.transferReference || "-"}) on ${rec.transferDate}`
+        : "Pending" }
+  ], { origin: -1, skipHeader: true });
+  XLSX.utils.book_append_sheet(wb, ws, "Revenue Share Statement");
+  return wb;
+}
+
+// Admin's Export buttons: fresh logos/cash counts, build the file, then the Share sheet (iPhone)
+// or a normal download (laptop / phones without file sharing).
+async function adminExportRevenueShare(from, to, kind){
+  await loadAdminStatementData();
+  const rec = admBuildAdhocRec(from, to);
+  const name = `Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}`;
+  if (kind === "pdf") {
+    const doc = await admBuildRevenueShareStatementPDF(rec);
+    await shareOrDownloadFile(doc.output("blob"), name + ".pdf", "application/pdf");
+  } else {
+    const wb = admBuildRevenueShareStatementExcel(rec);
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    await shareOrDownloadFile(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), name + ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  }
+}
 
 /* ---------------------- Admin tools on the phone page (Build 3) ----------------------
    Shown only to role "admin", each behind its own switch in the dashboard's Settings
@@ -1584,11 +2033,34 @@ async function receiptPdfBytes(sale){
 async function shareOrDownloadFile(blob, filename, mime){
   const file = new File([blob], filename, { type: mime });
   if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: filename }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+    try { await navigator.share({ files: [file], title: filename }); return; } catch (e) {
+      if (e && e.name === "AbortError") return;
+      // iPhone only opens the Share sheet straight after a tap. If making the file took longer than
+      // that, it refuses (NotAllowedError) -- so show one "Share" button to tap, which opens it.
+      if (e && e.name === "NotAllowedError") { await offerTapToShare(file); return; }
+    }
   }
   const url = URL.createObjectURL(blob), a = document.createElement("a");
   a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+function offerTapToShare(file){
+  return new Promise(resolve => {
+    const ov = document.createElement("div");
+    ov.id = "tapToShareOverlay";
+    ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;";
+    ov.innerHTML = `<div style="background:#fff;color:#16332C;border-radius:10px;padding:18px;max-width:340px;width:100%;text-align:center;">
+      <p style="margin:0 0 12px;font-size:15px;">${escapeHtml(file.name)} is ready.</p>
+      <button class="btn btn-primary" id="tapToShareBtn">Share</button>
+      <button class="btn btn-outline" id="tapToShareCancel" style="margin-left:8px;">Cancel</button></div>`;
+    document.body.appendChild(ov);
+    const done = () => { ov.remove(); resolve(); };
+    ov.querySelector("#tapToShareCancel").addEventListener("click", done);
+    ov.querySelector("#tapToShareBtn").addEventListener("click", async () => {
+      try { await navigator.share({ files: [file], title: file.name }); } catch (e) {}
+      done();
+    });
+  });
 }
 async function zipShownReceipts(btn){
   const invoices = currentFilteredInvoices();
@@ -1981,8 +2453,8 @@ async function renderMallShareTab(){
     document.getElementById("rsrTo").value = todayStrFromDate(lastMonthEnd);
     renderRsrPreview();
   });
-  document.getElementById("rsrExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementPDF(buildAdhocRec(from, to)); }));
-  document.getElementById("rsrExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementExcel(buildAdhocRec(from, to)); }));
+  document.getElementById("rsrExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; if (currentUserRole === "admin") await adminExportRevenueShare(from, to, "pdf"); else exportRevenueShareStatementPDF(buildAdhocRec(from, to)); }));
+  document.getElementById("rsrExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; if (currentUserRole === "admin") await adminExportRevenueShare(from, to, "excel"); else exportRevenueShareStatementExcel(buildAdhocRec(from, to)); }));
 
   document.getElementById("srLast1Month").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-1, now.getDate())); document.getElementById("srTo").value = todayS; });
   document.getElementById("srLast3Months").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-3, now.getDate())); document.getElementById("srTo").value = todayS; });
