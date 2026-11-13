@@ -645,6 +645,7 @@ async function buildApp(){
       </div>
     </div>
     <div id="timesUpTray"></div>
+    <div id="offlineSyncLine" style="font-size:12px; opacity:0.85; padding:4px 12px;"></div>
     <div class="tabs" id="tabsBar"></div>
     <div class="content" id="mainContent"><p class="panel-help">Loading\u2026</p></div>`;
 
@@ -694,6 +695,18 @@ async function buildApp(){
     adjustmentsToday = snap.docs.map(d => d.data());
     requestRender();
   }));
+  // Admin only: when the shop laptop's Offline file last sent its data to Firebase (TCS)
+  if (currentUserRole === "admin") {
+    unsubs.push(fsDb.collection("meta").doc("offlineSync").onSnapshot(doc => {
+      const el = document.getElementById("offlineSyncLine");
+      if (!el) return;
+      const d = doc.exists ? doc.data() : null;
+      const f = (t) => new Date(t).toLocaleString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+      el.innerHTML = (d && d.at)
+        ? `Shop laptop (Offline file) \u2014 last received: <b>${escapeHtml(f(d.at))}</b> (${escapeHtml(d.staffName || d.staffId || "")}, ${d.via === "manual" ? "Send button" : "automatic"})` + (d.lastDataAt ? ` \u00b7 last new data: ${escapeHtml(f(d.lastDataAt))}` : "")
+        : "";
+    }, () => {}));
+  }
 
   // Queue tab (staff, and anyone else who isn't mall_admin) needs the live waiting queue too.
   // Chair busy/free status is derived from sessionsToday above -- no separate listener needed.
