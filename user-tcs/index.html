@@ -128,7 +128,9 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [] };
+// TCS invoice numbers start with this (meta/config invoicePrefix at TCS). Change here if the format changes.
+const TCS_INVOICE_PREFIX = "RRG-TCS";
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [], adminPhoneTools: {} };
 let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [], queueRows = [];
 let unsubs = [];
 let currentTab = "operations";
@@ -581,7 +583,12 @@ function computeVisibleTabs(){
   } else {
     allTabs = [ { id: "queue", label: "Queue" } ];
     if (liveConfig.mobileBookingEnabled) allTabs.push({ id: "book", label: "Book" });
-    allTabs.push({ id: "operations", label: "Operations" }, { id: "receipts", label: "Receipts" }, { id: "settings", label: "Settings" });
+    allTabs.push({ id: "operations", label: "Operations" }, { id: "receipts", label: "Receipts" });
+    // Admin-only tools, each switched on from the dashboard's Settings ("Admin tools on the phone page")
+    const apt = liveConfig.adminPhoneTools || {};
+    if (currentUserRole === "admin" && (apt.dailySummary || apt.revenueShare)) allTabs.push({ id: "mdshare", label: "Mall Share" });
+    if (currentUserRole === "admin" && apt.cashRegister) allTabs.push({ id: "cash", label: "Cash" });
+    allTabs.push({ id: "settings", label: "Settings" });
   }
   // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
   // control what Mall Admin sees; it was never meant to also gate your own or staff's tools.
@@ -661,11 +668,11 @@ async function buildApp(){
 
   const today = todayStr();
   const invoicePrefixQuery = (collectionName) => fsDb.collection(collectionName)
-    .where("invoiceNo", ">=", "RRG-FY").where("invoiceNo", "<", "RRG-FZ"); // narrows to this year's invoices; filtered further client-side by date below
+    .where("invoiceNo", ">=", TCS_INVOICE_PREFIX + "-FY").where("invoiceNo", "<", TCS_INVOICE_PREFIX + "-FZ"); // narrows to this year's invoices; filtered further client-side by date below
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [] };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {} };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
@@ -678,7 +685,7 @@ async function buildApp(){
   // paymentSplits/invoiceAdjustments aren't dated directly -- keyed by invoiceNo, which embeds
   // the date (e.g. RRG-FY26-09-01-004), so today's slice is found by prefix match instead of a
   // full-collection read.
-  const invPrefix = `RRG-FY${today.slice(2,4)}-${today.slice(5,7)}-${today.slice(8,10)}`;
+  const invPrefix = `${TCS_INVOICE_PREFIX}-FY${today.slice(2,4)}-${today.slice(5,7)}-${today.slice(8,10)}`;
   unsubs.push(fsDb.collection("paymentSplits").where("invoiceNo", ">=", invPrefix).where("invoiceNo", "<", invPrefix + "\uf8ff").onSnapshot(snap => {
     paymentSplitsToday = snap.docs.map(d => d.data());
     requestRender();
@@ -778,6 +785,7 @@ function render(){
   renderTimesUpTray();
   if (currentTab === "receipts") { renderReceiptsTab(); return; }
   if (currentTab === "mdshare") { renderMallShareTab(); return; }
+  if (currentTab === "cash") { renderCashTab(); return; }
   if (currentTab === "analytics") { renderAnalyticsTab(); return; }
   if (currentTab === "settings") { renderSettingsTab(); return; }
   // Move's dropdown can now appear on Queue OR Operations -- a live update landing while either
@@ -922,7 +930,7 @@ let receiptsLoadedRange = null; // {from, to} of what's currently loaded, so we 
 let receiptsFilterFrom = null, receiptsFilterTo = null, receiptsSearchInvoice = "";
 let receiptsFilterYear = "", receiptsFilterMonth = "", receiptsFilterPaymentType = "";
 
-function invNoPrefix(dateStr){ return `RRG-FY${dateStr.slice(2,4)}-${dateStr.slice(5,7)}-${dateStr.slice(8,10)}`; }
+function invNoPrefix(dateStr){ return `${TCS_INVOICE_PREFIX}-FY${dateStr.slice(2,4)}-${dateStr.slice(5,7)}-${dateStr.slice(8,10)}`; }
 
 // Invoice numbers embed the date (RRG-FYyy-mm-dd-seq) and sort lexicographically WITHIN a
 // calendar year -- this range fetch is reliable for any range inside one calendar year (the
@@ -1048,7 +1056,7 @@ function printReceiptSimple(sale){
 
 function exportReceiptPDFSimple(sale){
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a5" });
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a5" });
   const rightX = 138; let y = 14;
   doc.setFont("courier","bold"); doc.setFontSize(13);
   doc.text(pdfSafeText(liveConfig.businessName || "RRG Lounge"), 74, y, { align: "center" }); y += 8;
@@ -1099,7 +1107,7 @@ function exportReceiptsPDFBulk(){
   const invoices = currentFilteredInvoices();
   if (!invoices.length) { alert("No receipts match the current filter."); return; }
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" });
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4", orientation: "landscape" });
   doc.setFontSize(16);
   doc.text(`${pdfSafeText(liveConfig.businessName || "RRG Lounge")} \u2014 Receipts`, 14, 16);
   doc.setFontSize(10);
@@ -1146,6 +1154,7 @@ async function renderReceiptsTab(){
         <button class="btn btn-outline btn-small" id="rTodayBtn">Today Only</button>
         <button class="btn btn-outline btn-small" id="rExcelBtn">Excel</button>
         <button class="btn btn-outline btn-small" id="rPdfBtn">PDF</button>
+        ${(currentUserRole === "admin" && (liveConfig.adminPhoneTools || {}).receiptsZip) ? `<button class="btn btn-primary btn-small" id="rZipBtn">ZIP of these receipts</button>` : ""}
       </div>
       <div class="table-scroll"><table class="data-table" id="rTable"><tbody><tr><td>Loading\u2026</td></tr></tbody></table></div>
     </div>`;
@@ -1156,6 +1165,7 @@ async function renderReceiptsTab(){
   document.getElementById("rFrom").addEventListener("change", e => { receiptsFilterFrom = e.target.value; refetchAndRenderReceipts(); });
   document.getElementById("rTo").addEventListener("change", e => { receiptsFilterTo = e.target.value; refetchAndRenderReceipts(); });
   document.getElementById("rSearch").addEventListener("input", e => { receiptsSearchInvoice = e.target.value; renderReceiptsTable(); });
+  if (document.getElementById("rZipBtn")) document.getElementById("rZipBtn").addEventListener("click", (e) => zipShownReceipts(e.currentTarget));
   document.getElementById("rTodayBtn").addEventListener("click", () => {
     receiptsFilterYear = ""; receiptsFilterMonth = ""; receiptsFilterFrom = todayS; receiptsFilterTo = todayS;
     document.getElementById("rYear").value = ""; document.getElementById("rMonth").value = "";
@@ -1289,6 +1299,7 @@ function computeMdSummary(from, to){
     payAgg[s.method] += rev;
   });
 
+  let adjustmentsNet = 0;
   const seenAdjInvoices = new Set();
   rows.forEach(s => {
     if (!s.invoiceNo || seenAdjInvoices.has(s.invoiceNo)) return;
@@ -1296,16 +1307,14 @@ function computeMdSummary(from, to){
     if (!adj) return;
     seenAdjInvoices.add(s.invoiceNo);
     totalRevenue += adj.amount;
-    if (!pkgAgg[adj.label]) { pkgAgg[adj.label] = { count: 0, revenue: 0 }; pkgOrder.push(adj.label); }
-    pkgAgg[adj.label].count++;
-    pkgAgg[adj.label].revenue += adj.amount;
+    adjustmentsNet += adj.amount; // kept OUT of pkgAgg on purpose: an adjustment's own note must never appear as a package
     payAgg[adj.method] = (payAgg[adj.method] || 0) + adj.amount;
   });
 
   const mdSharePercent = liveConfig.mdSharePercent;
   const mdShare = totalRevenue * (mdSharePercent / 100);
   const ownerShare = totalRevenue - mdShare;
-  return { totalSessions: rows.length, unitsUsed, totalRevenue, pkgAgg, pkgOrder, payAgg, mdSharePercent, mdShare, ownerShare };
+  return { totalSessions: rows.length, unitsUsed, totalRevenue, pkgAgg, pkgOrder, adjustmentsNet, payAgg, mdSharePercent, mdShare, ownerShare };
 }
 
 // Same money math the dashboard uses -- recorded amounts, not a bank-reconciled "actual" figure
@@ -1322,7 +1331,7 @@ function paymentMethodFinal(rec){
 }
 function buildAdhocRec(from, to){
   const s = computeMdSummary(from, to);
-  return { periodFrom: from, periodTo: to, totalSessions: s.totalSessions, unitsUsed: s.unitsUsed, pkgOrder: s.pkgOrder, pkgAgg: s.pkgAgg, payAgg: s.payAgg, totalRevenue: s.totalRevenue, mdSharePercent: s.mdSharePercent, mdShareAmount: s.mdShare, ownerShareAmount: s.ownerShare };
+  return { periodFrom: from, periodTo: to, totalSessions: s.totalSessions, unitsUsed: s.unitsUsed, pkgOrder: s.pkgOrder, pkgAgg: s.pkgAgg, adjustmentsNet: s.adjustmentsNet, payAgg: s.payAgg, totalRevenue: s.totalRevenue, mdSharePercent: s.mdSharePercent, mdShareAmount: s.mdShare, ownerShareAmount: s.ownerShare };
 }
 function mallShareForRange(from, to){
   if (from > to) return 0;
@@ -1394,9 +1403,21 @@ function addPdfLogos(doc, y, pageWidth){
   return used ? y + logoH + 5 : y;
 }
 
+// Package-by-package rows for the exported statement (shown only when mdshare.packageBreakup is on in the
+// visibility settings file). REAL packages only: an invoice adjustment's own note (typo fixes, duplicates,
+// cancellations) is kept out of this list so it never shows up as if it were a package. Because adjustments
+// are still inside Total Revenue, on a day that has one the package revenues add up to the total plus/minus
+// that net adjustment (Sessions always add up). If you'd rather close that gap visibly, turn on
+// mdshare.packageAdjustmentsLine to add ONE neutral "Other adjustments (net)" line -- never the individual notes.
+function packageRowsForExport(rec){
+  const rows = (rec.pkgOrder || []).map(k => ({ name: k, count: rec.pkgAgg[k].count, revenue: rec.pkgAgg[k].revenue }));
+  const net = Math.round(rec.adjustmentsNet || 0);
+  if (net !== 0 && isExplicitlyOn("mdshare.packageAdjustmentsLine")) rows.push({ name: "Other adjustments (net)", count: "", revenue: net });
+  return rows;
+}
 function exportRevenueShareStatementPDF(rec){
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4" });
   const pageWidth = 210;
   let y = addPdfLogos(doc, 12, pageWidth);
   doc.setFontSize(15); doc.setFont("helvetica","bold");
@@ -1409,11 +1430,20 @@ function exportRevenueShareStatementPDF(rec){
   if (liveConfig.mdName) { doc.text(`Prepared for: ${pdfSafeText(liveConfig.mdName)}`, 14, y); y += 5; }
   y += 3;
 
-  // Deliberately no package-by-package breakdown -- that's specifically where internal
-  // reconciliation adjustments (typo fixes, cancellations, etc.) leaked through by their own raw
-  // label. Payment method breakdown is fine to keep; every figure below already has any
-  // adjustments folded in, same as everywhere else in this app.
+  // The package-by-package table is optional (mdshare.packageBreakup in the visibility settings file). It lists
+  // real packages only -- see packageRowsForExport() for why adjustment notes are kept out of it. Every figure
+  // below already has any adjustments folded in, same as everywhere else in this app.
   doc.autoTable({ startY: y, body: [["Units Used", String(rec.unitsUsed), "Total Sessions", String(rec.totalSessions)]], styles: { fontSize: 10 }, columnStyles: { 0: { fontStyle: "bold" }, 2: { fontStyle: "bold" } }, theme: "plain" });
+
+  if (isExplicitlyOn("mdshare.packageBreakup")) {
+    const pkgRows = packageRowsForExport(rec);
+    if (pkgRows.length) doc.autoTable({
+      startY: doc.lastAutoTable.finalY + 3,
+      head: [["Package", "Sessions", "Revenue"]],
+      body: pkgRows.map(r => [pdfSafeText(r.name), String(r.count), fmtMoneyPDF(r.revenue)]),
+      styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }
+    });
+  }
 
   const fin = paymentMethodFinal(rec);
   doc.autoTable({
@@ -1443,6 +1473,13 @@ function exportRevenueShareStatementExcel(rec){
     [`Period: ${rec.periodFrom} to ${rec.periodTo}`], [],
     ["Units Used", rec.unitsUsed, "Total Sessions", rec.totalSessions], []
   ]);
+  if (isExplicitlyOn("mdshare.packageBreakup")) {
+    const pkgRows = packageRowsForExport(rec);
+    if (pkgRows.length) {
+      XLSX.utils.sheet_add_json(ws, pkgRows.map(r => ({ Package: r.name, Sessions: r.count, Revenue: r.revenue })), { origin: -1 });
+      XLSX.utils.sheet_add_aoa(ws, [[]], { origin: -1 });
+    }
+  }
   XLSX.utils.sheet_add_json(ws, ["UPI","Cash","Card","Pending"].map(m => ({ "Payment Method": m, Amount: rec.payAgg[m]||0 })), { origin: -1 });
   XLSX.utils.sheet_add_aoa(ws, [
     [],
@@ -1455,7 +1492,7 @@ function exportRevenueShareStatementExcel(rec){
 }
 function exportSettlementReportPDF(from, to, settlements){
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4" });
   const pageWidth = 210;
   let y = addPdfLogos(doc, 12, pageWidth);
   doc.setFontSize(16); doc.setFont("helvetica","bold");
@@ -1483,6 +1520,839 @@ function exportSettlementReportExcel(from, to, settlements){
   XLSX.writeFile(wb, `Settlement_Report_${from}_to_${to}.xlsx`);
 }
 
+
+/* ---------------------- Admin: Revenue Share Statement, same as the dashboard (Build 3, part 3) ----------------------
+   Admin login only. The Mall Admin login keeps its own simpler statement above, unchanged.
+   Everything below is the dashboard's own statement code, copied across with only these swaps:
+   CONFIG -> admStmtCfg (read fresh from meta/config, so it carries the logos too), the dashboard's
+   caches -> this page's Mall Share data (mallShareSessions / Adjustments / Splits / Settlements, which
+   are the same Firestore collections) plus cashCounts, and doc.save -> the iPhone Share sheet.
+   Mall Share owed / settled / status reuse this page's mallShareForRange etc.: those work off the
+   RECORDED payment totals, exactly as the dashboard's do, so the figures are the same. */
+let admStmtCfg = null, admCashCounts = [];
+async function loadAdminStatementData(){
+  const [cfgDoc, ccSnap] = await Promise.all([
+    fsDb.collection("meta").doc("config").get(),
+    fsDb.collection("cashCounts").get()
+  ]);
+  const v = (cfgDoc.data() || {}).value || {};
+  admStmtCfg = {
+    businessName: liveConfig.businessName, mdName: liveConfig.mdName,
+    gstEnabled: liveConfig.gstEnabled, gstRate: liveConfig.gstRate,
+    logoDataUrl: v.logoDataUrl || "", mdLogoDataUrl: v.mdLogoDataUrl || ""
+  };
+  admCashCounts = ccSnap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) }));
+}
+
+// Same as the dashboard's computeMdSummary: an invoice adjustment shows as its own labelled line
+// in the Package table (the dashboard's statement does this; the Mall Admin version here doesn't).
+function admComputeMdSummary(from, to){
+  const rows = mallShareSessions.filter(s => s.date >= from && s.date <= to);
+  const unitsUsed = new Set(rows.map(s => s.chairName).filter(Boolean)).size;
+  let totalRevenue = rows.reduce((a,s) => a + effectiveRevenue(s), 0);
+  const pkgAgg = {}; const pkgOrder = [];
+  rows.forEach(s => {
+    const key = cartItemName(s.chairName, s.packageLabel, s.unitType);
+    if (!pkgAgg[key]) { pkgAgg[key] = { count: 0, revenue: 0 }; pkgOrder.push(key); }
+    pkgAgg[key].count++;
+    pkgAgg[key].revenue += effectiveRevenue(s);
+  });
+  const payAgg = { UPI: 0, Cash: 0, Card: 0, Pending: 0 };
+  const seenSplitInvoices = new Set();
+  rows.forEach(s => {
+    const rev = effectiveRevenue(s);
+    if (rev <= 0) return;
+    if (s.method === "Split") {
+      if (!s.invoiceNo || seenSplitInvoices.has(s.invoiceNo)) return;
+      seenSplitInvoices.add(s.invoiceNo);
+      const split = msSplitFor(s.invoiceNo);
+      if (split) split.splits.forEach(row => { payAgg[row.method] = (payAgg[row.method] || 0) + row.amount; });
+      return;
+    }
+    if (!(s.method in payAgg)) payAgg[s.method] = 0;
+    payAgg[s.method] += rev;
+  });
+  const seenAdjInvoices = new Set();
+  rows.forEach(s => {
+    if (!s.invoiceNo || seenAdjInvoices.has(s.invoiceNo)) return;
+    const adj = msAdjustmentFor(s.invoiceNo);
+    if (!adj) return;
+    seenAdjInvoices.add(s.invoiceNo);
+    totalRevenue += adj.amount;
+    if (!pkgAgg[adj.label]) { pkgAgg[adj.label] = { count: 0, revenue: 0 }; pkgOrder.push(adj.label); }
+    pkgAgg[adj.label].count++;
+    pkgAgg[adj.label].revenue += adj.amount;
+    payAgg[adj.method] = (payAgg[adj.method] || 0) + adj.amount;
+  });
+  const mdSharePercent = liveConfig.mdSharePercent;
+  const mdShare = totalRevenue * (mdSharePercent / 100);
+  return { totalSessions: rows.length, unitsUsed, totalRevenue, pkgAgg, pkgOrder, payAgg, mdSharePercent, mdShare, ownerShare: totalRevenue - mdShare };
+}
+
+function admSurchargeOf(s){ return (s.cardSurcharge > 0 && !(s.status === "cancelled" && s.refunded)) ? s.cardSurcharge : 0; }
+function admCardSurchargeForDate(dateStr){ return mallShareSessions.reduce((a, x) => x.date === dateStr ? a + admSurchargeOf(x) : a, 0); }
+function admReconciliationStatusForDate(dateStr){
+  const counts = admCashCounts.filter(c => c.date === dateStr);
+  const opening = counts.find(c => c.type === "opening");
+  const closing = counts.find(c => c.type === "closing");
+  const upi = counts.find(c => c.type === "upiReceived");
+  const card = counts.find(c => c.type === "cardReceived");
+  return { date: dateStr, closingDone: !!closing, upiDone: !!upi, ok: !!closing && !!upi, opening, closing, upi, card };
+}
+// Dashboard's computeCashReconciliationForPeriod, unchanged apart from the data source.
+function admComputeCashReconciliationForPeriod(from, to){
+  const dates = [...new Set(mallShareSessions.filter(s => s.date >= from && s.date <= to).map(s => s.date))].sort();
+  const statuses = dates.map(admReconciliationStatusForDate);
+  const unreconciledDates = statuses.filter(s => !s.ok).map(s => s.date);
+  const allReconciled = dates.length > 0 && unreconciledDates.length === 0;
+  const openingDenomTotals = {}, denomTotals = {};
+  CASH_DENOMS.forEach(d => { openingDenomTotals[d] = 0; denomTotals[d] = 0; });
+  let openingTotal = 0, cashTotal = 0, cashVarianceTotal = 0, upiActualTotal = 0, upiVarianceTotal = 0;
+  if (allReconciled) {
+    statuses.forEach(s => {
+      const openDenoms = (s.opening && s.opening.denominations) || {};
+      const closeDenoms = (s.closing && s.closing.denominations) || {};
+      CASH_DENOMS.forEach(d => {
+        openingDenomTotals[d] += parseInt(openDenoms[d], 10) || 0;
+        denomTotals[d] += parseInt(closeDenoms[d], 10) || 0;
+      });
+      openingTotal += (s.opening && s.opening.total) || 0;
+      cashTotal += (s.closing && s.closing.total) || 0;
+      cashVarianceTotal += (s.closing && s.closing.variance) || 0;
+      upiActualTotal += (s.upi && s.upi.total) || 0;
+      upiVarianceTotal += (s.upi && s.upi.variance) || 0;
+    });
+  }
+  let cardActualTotal = 0, cardVarianceTotal = 0, cardDataAvailable = false;
+  statuses.forEach(s => {
+    if (s.card) { cardActualTotal += (s.card.total || 0) - admCardSurchargeForDate(s.date); cardVarianceTotal += s.card.variance || 0; cardDataAvailable = true; }
+  });
+  return { dates, unreconciledDates, allReconciled, openingDenomTotals, denomTotals, openingTotal, cashTotal, cashVarianceTotal, upiActualTotal, upiVarianceTotal, cardActualTotal, cardVarianceTotal, cardDataAvailable };
+}
+function admBuildAdhocRec(from, to){
+  const s = admComputeMdSummary(from, to);
+  const recon = admComputeCashReconciliationForPeriod(from, to);
+  return {
+    periodFrom: from, periodTo: to,
+    totalSessions: s.totalSessions, unitsUsed: s.unitsUsed,
+    pkgOrder: s.pkgOrder, pkgAgg: s.pkgAgg, payAgg: s.payAgg,
+    totalRevenue: s.totalRevenue, mdSharePercent: s.mdSharePercent,
+    mdShareAmount: s.mdShare, ownerShareAmount: s.ownerShare,
+    cashRecon: { allReconciled: recon.allReconciled, unreconciledDates: recon.unreconciledDates, openingDenomTotals: recon.openingDenomTotals, denomTotals: recon.denomTotals, openingTotal: recon.openingTotal, cashTotal: recon.cashTotal, cashVarianceTotal: recon.cashVarianceTotal, upiActualTotal: recon.upiActualTotal, upiVarianceTotal: recon.upiVarianceTotal, cardActualTotal: recon.cardActualTotal, cardVarianceTotal: recon.cardVarianceTotal, cardDataAvailable: recon.cardDataAvailable },
+    reconciliationNote: { reasonTag: "", detail: "" }
+  };
+}
+// Dashboard's paymentMethodReconRows: Recorded vs Actual vs Variance; money figures from Recorded.
+function admPaymentMethodReconRows(rec){
+  const cr = rec.cashRecon || {};
+  const recordedOf = (m) => (rec.payAgg && rec.payAgg[m]) || 0;
+  const upiRecorded = recordedOf("UPI"), cashRecorded = recordedOf("Cash"), cardRecorded = recordedOf("Card"), pendingRecorded = recordedOf("Pending");
+  const upiActual = cr.allReconciled ? (cr.upiActualTotal || 0) : upiRecorded;
+  const cashActual = cr.allReconciled ? (cashRecorded + (cr.cashVarianceTotal || 0)) : cashRecorded;
+  const cardActual = cr.cardDataAvailable ? (cr.cardActualTotal || 0) : cardRecorded;
+  const rows = [
+    { method: "UPI", recorded: upiRecorded, actual: upiActual },
+    { method: "Cash", recorded: cashRecorded, actual: cashActual },
+    { method: "Card", recorded: cardRecorded, actual: cardActual },
+    { method: "Pending", recorded: pendingRecorded, actual: pendingRecorded }
+  ].map(r => Object.assign(r, { variance: r.actual - r.recorded }));
+  const totalRecorded = rows.reduce((a, r) => a + r.recorded, 0);
+  const totalActual = rows.reduce((a, r) => a + r.actual, 0);
+  const finalTotalRevenue = totalRecorded;
+  const gstRegistered = !!admStmtCfg.gstEnabled;
+  const gstRate = admStmtCfg.gstRate || 0;
+  const baseRevenue = gstRegistered ? finalTotalRevenue / (1 + gstRate / 100) : finalTotalRevenue;
+  const gstAmount = gstRegistered ? finalTotalRevenue - baseRevenue : 0;
+  const finalMdShare = baseRevenue * (rec.mdSharePercent / 100);
+  return { rows, totalRecorded, totalActual, totalVariance: totalActual - totalRecorded, finalTotalRevenue, gstRegistered, gstRate, baseRevenue, gstAmount, finalMdShare, finalOwnerShare: baseRevenue - finalMdShare };
+}
+function admFyBoundsFor(dateStr){
+  const d = dateStr ? new Date(dateStr) : new Date();
+  const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
+  return { fyStartYear: y, from: `${y}-04-01`, to: `${y+1}-03-31`, label: `FY${y}-${String(y+1).slice(-2)}` };
+}
+// Dashboard's buildCumulativeRollupRows (page 2). Total Revenue per row = the recorded total, as there.
+function admBuildCumulativeRollupRows(){
+  const dates = mallShareSessions.map(s => s.date).sort();
+  if (!dates.length) return [];
+  const currentFY = admFyBoundsFor();
+  const rows = [];
+  const revenueOf = (from, to) => paymentMethodFinal(buildAdhocRec(from, to)).finalTotalRevenue;
+  for (let y = admFyBoundsFor(dates[0]).fyStartYear; y < currentFY.fyStartYear; y++) {
+    const from = `${y}-04-01`, to = `${y+1}-03-31`;
+    const totalRevenue = revenueOf(from, to);
+    const mallShare = mallShareForRange(from, to);
+    if (totalRevenue === 0 && mallShare === 0) continue;
+    const settled = settledAmountForRange(from, to);
+    rows.push({ label: `FY${y}-${String(y+1).slice(-2)}`, isYearRow: true, totalRevenue, mallShare, settled, balance: mallShare - settled, sortKey: to });
+  }
+  const latestDate = dates[dates.length - 1];
+  const latest = new Date(latestDate > todayStr() ? todayStr() : latestDate);
+  let cursor = new Date(currentFY.from);
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  while (cursor <= latest) {
+    const mFrom = todayStr(cursor);
+    const mTo = todayStr(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0));
+    const totalRevenue = revenueOf(mFrom, mTo);
+    const mallShare = mallShareForRange(mFrom, mTo);
+    if (totalRevenue > 0 || mallShare > 0) {
+      const settled = settledAmountForRange(mFrom, mTo);
+      rows.push({ label: `${monthNames[cursor.getMonth()]} ${cursor.getFullYear()}`, isYearRow: false, totalRevenue, mallShare, settled, balance: mallShare - settled, sortKey: mTo });
+    }
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+  rows.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
+  return rows;
+}
+function admLoadImageDims(dataUrl){
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+function admPdfImageFormat(dataUrl){
+  const m = /^data:image\/(\w+);base64/.exec(dataUrl || "");
+  if (!m) return "PNG";
+  const ext = m[1].toUpperCase();
+  return ext === "JPG" ? "JPEG" : ext;
+}
+
+// The dashboard's exportRevenueShareStatementPDF, line for line; returns the finished doc.
+async function admBuildRevenueShareStatementPDF(rec){
+  const CONFIG = admStmtCfg;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4" });
+  const pageWidth = 210;
+  let y = 12;
+  const logoH = 13;
+  if (CONFIG.logoDataUrl) {
+    const dims = await admLoadImageDims(CONFIG.logoDataUrl);
+    if (dims && dims.w > 0) {
+      const w = logoH * (dims.w / dims.h);
+      doc.addImage(CONFIG.logoDataUrl, admPdfImageFormat(CONFIG.logoDataUrl), 14, y - 3, w, logoH);
+    }
+  }
+  if (CONFIG.mdLogoDataUrl) {
+    const dims = await admLoadImageDims(CONFIG.mdLogoDataUrl);
+    if (dims && dims.w > 0) {
+      const w = logoH * (dims.w / dims.h);
+      doc.addImage(CONFIG.mdLogoDataUrl, admPdfImageFormat(CONFIG.mdLogoDataUrl), pageWidth - 14 - w, y - 3, w, logoH);
+    }
+  }
+  if (CONFIG.logoDataUrl || CONFIG.mdLogoDataUrl) y += logoH + 3; // logos drawn at y - 3 so they clear the title, same as the dashboard
+
+  doc.setFontSize(15);
+  doc.setFont("helvetica", "bold");
+  doc.text("Revenue Share Statement", 14, y);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text(pdfSafeText(CONFIG.businessName), pageWidth - 14, y, { align: "right" });
+  y += 6;
+
+  doc.setFontSize(9);
+  doc.text(`Period: ${dmyShort(rec.periodFrom)} to ${dmyShort(rec.periodTo)}`, 14, y);
+  doc.text(`Generated: ${dmy()} ${timeStr()}`, pageWidth - 14, y, { align: "right" });
+  y += 5;
+  if (CONFIG.mdName) { doc.text(`Prepared for: ${pdfSafeText(CONFIG.mdName)}`, 14, y); y += 5; }
+  y += 3;
+
+  doc.autoTable({
+    startY: y,
+    body: [["Units Used", String(rec.unitsUsed), "Total Sessions", String(rec.totalSessions)]],
+    styles: { fontSize: 10 },
+    columnStyles: { 0: { fontStyle: "bold" }, 2: { fontStyle: "bold" } },
+    theme: "plain"
+  });
+
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 3,
+    head: [["Package", "Sessions", "Revenue"]],
+    body: (rec.pkgOrder || []).map(k => [pdfSafeText(k), rec.pkgAgg[k].count, fmtMoneyPDF(rec.pkgAgg[k].revenue)]),
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [30,30,30], textColor: [230,190,80] }
+  });
+
+  const recon = admPaymentMethodReconRows(rec);
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 3,
+    head: [["Payment Method", "Recorded Amount", "Actual Amount", "Variance"]],
+    body: recon.rows.map(r => [r.method, fmtMoneyPDF(r.recorded), fmtMoneyPDF(r.actual), fmtMoneyPDF(r.variance)]),
+    foot: [["Total", fmtMoneyPDF(recon.totalRecorded), fmtMoneyPDF(recon.totalActual), fmtMoneyPDF(recon.totalVariance)]],
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [30,30,30], textColor: [230,190,80] },
+    footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" }
+  });
+  const pmNote = rec.reconciliationNote;
+  doc.setFontSize(9);
+  doc.setFont("helvetica", (pmNote && pmNote.reasonTag) ? "bold" : "italic");
+  doc.text(
+    (pmNote && pmNote.reasonTag)
+      ? `Possible Reason for Variance: ${pdfSafeText(pmNote.reasonTag)}${pmNote.detail ? " \u2014 " + pdfSafeText(pmNote.detail) : ""}`
+      : "Possible Reason for Variance: Staff entry mistake / wrong change / round-up by customer / short-over, etc.",
+    14, doc.lastAutoTable.finalY + 4, { maxWidth: pageWidth - 28 }
+  );
+
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 6,
+    body: [
+      [recon.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", fmtMoneyPDF(recon.finalTotalRevenue)],
+      ...(recon.gstRegistered ? [
+        [`GST (${recon.gstRate}%)`, fmtMoneyPDF(recon.gstAmount)],
+        ["Base Revenue (excl. GST)", fmtMoneyPDF(recon.baseRevenue)]
+      ] : []),
+      [`Mall Share (${rec.mdSharePercent}%${recon.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(recon.finalMdShare)],
+      [`RRG Lounge Share (${100-rec.mdSharePercent}%${recon.gstRegistered ? " of base" : ""})`, fmtMoneyPDF(recon.finalOwnerShare)]
+    ],
+    styles: { fontSize: 11, fontStyle: "bold" },
+    theme: "plain"
+  });
+
+  let lastY = doc.lastAutoTable.finalY;
+  if (rec.cashRecon && rec.cashRecon.allReconciled) {
+    const openTotals = rec.cashRecon.openingDenomTotals || {};
+    const closeTotals = rec.cashRecon.denomTotals || {};
+    const openGrand = rec.cashRecon.openingTotal || 0;
+    const closeGrand = rec.cashRecon.cashTotal || 0;
+    doc.autoTable({
+      startY: doc.lastAutoTable.finalY + 8,
+      head: [["Cash Denomination", "Opening Count", "Opening Total", "Closing Count", "Closing Total", "Difference"]],
+      body: CASH_DENOMS.map(d => {
+        const oc = openTotals[d] || 0, cc = closeTotals[d] || 0;
+        return [`Rs.${d}`, String(oc), fmtMoneyPDF(oc * d), String(cc), fmtMoneyPDF(cc * d), fmtMoneyPDF((cc - oc) * d)];
+      }),
+      foot: [["Total", "", fmtMoneyPDF(openGrand), "", fmtMoneyPDF(closeGrand), fmtMoneyPDF(closeGrand - openGrand)]],
+      styles: { fontSize: 8, cellPadding: 1.5 },
+      headStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontSize: 7.5 },
+      footStyles: { fillColor: [30,30,30], textColor: [230,190,80], fontStyle: "bold" },
+      columnStyles: { 0: { fontStyle: "bold" } }
+    });
+    doc.setFontSize(7.5);
+    doc.setFont("helvetica", "normal");
+    lastY = doc.lastAutoTable.finalY + 5;
+    if (lastY > 280) { doc.addPage(); lastY = 20; }
+    doc.text(`The Difference total above should match the day's Cash revenue (${fmtMoneyPDF(rec.payAgg ? (rec.payAgg.Cash || 0) : 0)}); any gap is a real physical cash short/over, same as the Cash Register variance.`, 14, lastY, { maxWidth: pageWidth - 28 });
+  } else if (rec.cashRecon) {
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "italic");
+    lastY = doc.lastAutoTable.finalY + 8;
+    if (lastY > 280) { doc.addPage(); lastY = 20; }
+    doc.text(`Physical cash denomination breakdown not included \u2014 reconciliation pending for: ${rec.cashRecon.unreconciledDates.map(dmyShort).join(", ")}.`, 14, lastY, { maxWidth: pageWidth - 28 });
+  }
+
+  const fullySettled = isRangeFullySettled(rec.periodFrom, rec.periodTo);
+  const covering = fullySettled ? latestCoveringSettlement(rec.periodFrom, rec.periodTo) : null;
+  const statusLine = fullySettled && covering
+    ? `Revenue Settlement Status: SETTLED \u2014 ${pdfSafeText(covering.transferMethod || "")} on ${dmyShort(covering.transferDate)}${covering.transferReference ? " (Ref: " + pdfSafeText(covering.transferReference) + ")" : ""}`
+    : "Revenue Settlement Status: PENDING";
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "bold");
+  let statusY = lastY + 16;
+  if (statusY > 285) { doc.addPage(); statusY = 20; }
+  doc.text(statusLine, 14, statusY);
+
+  const rollupRows = admBuildCumulativeRollupRows();
+  if (rollupRows.length) {
+    doc.addPage();
+    let y2 = 16;
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Cumulative Performance", pageWidth/2, y2, { align: "center" }); y2 += 8;
+    doc.autoTable({
+      startY: y2,
+      head: [["Period", "Total Revenue", "Mall Share", "Settled", "Balance"]],
+      body: rollupRows.map(r => [r.label, fmtMoneyPDF(r.totalRevenue), fmtMoneyPDF(r.mallShare), fmtMoneyPDF(r.settled), fmtMoneyPDF(r.balance)]),
+      styles: { fontSize: 9, cellPadding: 2 },
+      headStyles: { fillColor: [30,30,30], textColor: [230,190,80] },
+      columnStyles: { 0: { fontStyle: "bold" } },
+      didParseCell: (data) => {
+        if (data.section === "body" && rollupRows[data.row.index] && rollupRows[data.row.index].isYearRow) {
+          data.cell.styles.fillColor = [245, 240, 225];
+          data.cell.styles.fontStyle = "bold";
+        }
+      }
+    });
+    const grand = rollupRows.reduce((a,r) => ({
+      totalRevenue: a.totalRevenue + r.totalRevenue, mallShare: a.mallShare + r.mallShare,
+      settled: a.settled + r.settled, balance: a.balance + r.balance
+    }), { totalRevenue: 0, mallShare: 0, settled: 0, balance: 0 });
+    doc.autoTable({
+      startY: doc.lastAutoTable.finalY + 2,
+      body: [["TOTAL", fmtMoneyPDF(grand.totalRevenue), fmtMoneyPDF(grand.mallShare), fmtMoneyPDF(grand.settled), fmtMoneyPDF(grand.balance)]],
+      styles: { fontSize: 9, cellPadding: 2, fontStyle: "bold" },
+      bodyStyles: { fillColor: [30,30,30], textColor: [230,190,80] },
+      theme: "plain"
+    });
+  }
+  return doc;
+}
+
+// The dashboard's exportRevenueShareStatementExcel, line for line; returns the workbook.
+function admBuildRevenueShareStatementExcel(rec){
+  const CONFIG = admStmtCfg;
+  const wb = XLSX.utils.book_new();
+  const headerRows = [
+    { A: "Revenue Share Statement" },
+    { A: CONFIG.businessName },
+    ...(CONFIG.mdName ? [{ A: `Prepared for: ${CONFIG.mdName}` }] : []),
+    { A: `Period: ${dmyShort(rec.periodFrom)} to ${dmyShort(rec.periodTo)}` },
+    { A: `Generated: ${dmy()} ${timeStr()}` },
+    {},
+    { A: "Units Used", B: rec.unitsUsed },
+    { A: "Total Sessions", B: rec.totalSessions },
+    {}
+  ];
+  const ws = XLSX.utils.json_to_sheet(headerRows, { skipHeader: true });
+  XLSX.utils.sheet_add_json(ws, (rec.pkgOrder || []).map(k => ({ Package: k, Sessions: rec.pkgAgg[k].count, Revenue: rec.pkgAgg[k].revenue })), { origin: -1 });
+  XLSX.utils.sheet_add_json(ws, [{}], { origin: -1, skipHeader: true });
+  const recon = admPaymentMethodReconRows(rec);
+  XLSX.utils.sheet_add_json(ws, recon.rows.map(r => ({
+    Method: r.method, "Recorded Amount": r.recorded, "Actual Amount": r.actual, Variance: r.variance
+  })), { origin: -1 });
+  XLSX.utils.sheet_add_json(ws, [
+    { Method: "Total", "Recorded Amount": recon.totalRecorded, "Actual Amount": recon.totalActual, Variance: recon.totalVariance }
+  ], { origin: -1, skipHeader: false });
+  const pmNote = rec.reconciliationNote;
+  XLSX.utils.sheet_add_json(ws, [
+    { A: (pmNote && pmNote.reasonTag) ? `Possible Reason for Variance: ${pmNote.reasonTag}${pmNote.detail ? " -- " + pmNote.detail : ""}` : "Possible Reason for Variance: Staff entry mistake / wrong change / round-up by customer / short-over, etc." }
+  ], { origin: -1, skipHeader: true });
+  XLSX.utils.sheet_add_json(ws, [
+    {},
+    { A: recon.gstRegistered ? "Total Revenue (incl. GST)" : "Total Revenue", B: recon.finalTotalRevenue },
+    ...(recon.gstRegistered ? [
+      { A: `GST (${recon.gstRate}%)`, B: recon.gstAmount },
+      { A: "Base Revenue (excl. GST)", B: recon.baseRevenue }
+    ] : []),
+    { A: `Mall Share (${rec.mdSharePercent}%${recon.gstRegistered ? " of base" : ""})`, B: recon.finalMdShare },
+    { A: `RRG Lounge Share (${100-rec.mdSharePercent}%${recon.gstRegistered ? " of base" : ""})`, B: recon.finalOwnerShare }
+  ], { origin: -1, skipHeader: true });
+  if (rec.cashRecon && rec.cashRecon.allReconciled) {
+    const openTotals = rec.cashRecon.openingDenomTotals || {};
+    const closeTotals = rec.cashRecon.denomTotals || {};
+    const openGrand = rec.cashRecon.openingTotal || 0;
+    const closeGrand = rec.cashRecon.cashTotal || 0;
+    XLSX.utils.sheet_add_json(ws, [{}, { A: "Cash Denomination" }], { origin: -1, skipHeader: true });
+    XLSX.utils.sheet_add_json(ws, CASH_DENOMS.map(d => {
+      const oc = openTotals[d] || 0, cc = closeTotals[d] || 0;
+      return { Denomination: `Rs.${d}`, "Opening Count": oc, "Opening Total": oc * d, "Closing Count": cc, "Closing Total": cc * d, Difference: (cc - oc) * d };
+    }), { origin: -1 });
+    XLSX.utils.sheet_add_json(ws, [
+      { A: "Total", C: openGrand, E: closeGrand, F: closeGrand - openGrand },
+      { A: `Note: Difference total should match the day's Cash revenue (${rec.payAgg ? (rec.payAgg.Cash || 0) : 0}); any gap is a real physical cash short/over, same as the Cash Register variance.` }
+    ], { origin: -1, skipHeader: true });
+  } else if (rec.cashRecon) {
+    XLSX.utils.sheet_add_json(ws, [{}, { A: `Physical cash denomination breakdown not included \u2014 reconciliation pending for: ${rec.cashRecon.unreconciledDates.join(", ")}.` }], { origin: -1, skipHeader: true });
+  }
+  XLSX.utils.sheet_add_json(ws, [
+    {},
+    { A: "Revenue Settlement Status", B: rec.status === "transferred"
+        ? `Transferred via ${rec.transferMethod} (Ref: ${rec.transferReference || "-"}) on ${rec.transferDate}`
+        : "Pending" }
+  ], { origin: -1, skipHeader: true });
+  XLSX.utils.book_append_sheet(wb, ws, "Revenue Share Statement");
+  return wb;
+}
+
+// Admin's Export buttons: fresh logos/cash counts, build the file, then the Share sheet (iPhone)
+// or a normal download (laptop / phones without file sharing).
+async function adminExportRevenueShare(from, to, kind){
+  await loadAdminStatementData();
+  const rec = admBuildAdhocRec(from, to);
+  const name = `Revenue_Share_Statement_${rec.periodFrom}_to_${rec.periodTo}`;
+  if (kind === "pdf") {
+    const doc = await admBuildRevenueShareStatementPDF(rec);
+    await shareOrDownloadFile(doc.output("blob"), name + ".pdf", "application/pdf");
+  } else {
+    const wb = admBuildRevenueShareStatementExcel(rec);
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    await shareOrDownloadFile(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), name + ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  }
+}
+
+/* ---------------------- Admin tools on the phone page (Build 3) ----------------------
+   Shown only to role "admin", each behind its own switch in the dashboard's Settings
+   (meta/config.adminPhoneTools). Staff and Mall Admin never see any of this. */
+
+// Daily Performance Summary -- the exact text the dashboard's Mall Share tab builds (same figures:
+// paymentMethodFinal + computeMdSummary are this page's copies of the dashboard calculations).
+function dailyPerformanceSummaryText(date){
+  const monthStart = date.slice(0, 7) + "-01";
+  const dayPm = paymentMethodFinal(buildAdhocRec(date, date));
+  const daySummary = computeMdSummary(date, date);
+  const cumPm = paymentMethodFinal(buildAdhocRec(monthStart, date));
+  const cumSummary = computeMdSummary(monthStart, date);
+  const dateObj = new Date(date);
+  const dayLabel = dateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const cumFromLabel = new Date(monthStart).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  const cumToLabel = dateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  const mdPct = liveConfig.mdSharePercent;
+  return `Greetings Sir,
+
+Please find RRG Lounge's performance summary:
+
+Today's (${dayLabel}) Performance
+
+Revenue: ${fmtMoney(dayPm.finalTotalRevenue)}
+Sessions: ${daySummary.totalSessions}
+Units Utilized: ${daySummary.unitsUsed}
+Mall Share (${mdPct}%): ${fmtMoney(dayPm.finalMdShare)}
+
+Cumulative Performance (${cumFromLabel} \u2013 ${cumToLabel})
+
+Revenue: ${fmtMoney(cumPm.finalTotalRevenue)}
+Sessions: ${cumSummary.totalSessions}
+Mall Share (${mdPct}%): ${fmtMoney(cumPm.finalMdShare)}
+
+Thank you.`;
+}
+function wireDailyPerformanceSummary(){
+  const out = document.getElementById("dpsOutput"), dateEl = document.getElementById("dpsDate");
+  if (!out || !dateEl) return;
+  const show = () => { out.value = dailyPerformanceSummaryText(dateEl.value || todayStr()); };
+  show();
+  dateEl.addEventListener("change", show);
+  if (dateEl.showPicker) dateEl.addEventListener("click", () => { try { dateEl.showPicker(); } catch (_) {} });
+  document.getElementById("dpsCopyBtn").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(out.value); } catch (_) { out.select(); document.execCommand("copy"); }
+    const b = document.getElementById("dpsCopyBtn"); b.textContent = "Copied!"; setTimeout(() => { b.textContent = "Copy"; }, 1500);
+  });
+  document.getElementById("dpsShareBtn").addEventListener("click", async () => {
+    if (navigator.share) { try { await navigator.share({ text: out.value }); return; } catch (e) { if (e && e.name === "AbortError") return; } }
+    try { await navigator.clipboard.writeText(out.value); alert("Sharing isn't available here \u2014 the text was copied instead."); } catch (_) { out.select(); }
+  });
+}
+
+// Receipts ZIP: every bill in the Receipts list currently shown, one PDF each, in one .zip.
+// The PDFs are this page's own receipt PDF (the same one its per-bill "PDF" button makes).
+async function receiptPdfBytes(sale){
+  const api = window.jspdf.jsPDF.API, orig = api.save;
+  let bytes = null, name = null;
+  api.save = function(n){ bytes = new Uint8Array(this.output("arraybuffer")); name = n; return this; };
+  try { await exportReceiptPDFSimple(sale); } finally { api.save = orig; }
+  return { name: name || ((sale.invoiceNo || "Receipt").replace(/[^\w-]/g, "_") + ".pdf"), bytes };
+}
+async function shareOrDownloadFile(blob, filename, mime){
+  const file = new File([blob], filename, { type: mime });
+  if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: filename }); return; } catch (e) {
+      if (e && e.name === "AbortError") return;
+      // iPhone only opens the Share sheet straight after a tap. If making the file took longer than
+      // that, it refuses (NotAllowedError) -- so show one "Share" button to tap, which opens it.
+      if (e && e.name === "NotAllowedError") { await offerTapToShare(file); return; }
+    }
+  }
+  const url = URL.createObjectURL(blob), a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+function offerTapToShare(file){
+  return new Promise(resolve => {
+    const ov = document.createElement("div");
+    ov.id = "tapToShareOverlay";
+    ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;";
+    ov.innerHTML = `<div style="background:#fff;color:#16332C;border-radius:10px;padding:18px;max-width:340px;width:100%;text-align:center;">
+      <p style="margin:0 0 12px;font-size:15px;">${escapeHtml(file.name)} is ready.</p>
+      <button class="btn btn-primary" id="tapToShareBtn">Share</button>
+      <button class="btn btn-outline" id="tapToShareCancel" style="margin-left:8px;">Cancel</button></div>`;
+    document.body.appendChild(ov);
+    const done = () => { ov.remove(); resolve(); };
+    ov.querySelector("#tapToShareCancel").addEventListener("click", done);
+    ov.querySelector("#tapToShareBtn").addEventListener("click", async () => {
+      try { await navigator.share({ files: [file], title: file.name }); } catch (e) {}
+      done();
+    });
+  });
+}
+async function zipShownReceipts(btn){
+  const invoices = currentFilteredInvoices();
+  if (!invoices.length) { alert("No receipts in the list to zip."); return; }
+  const label = (receiptsFilterFrom === receiptsFilterTo) ? receiptsFilterFrom : `${receiptsFilterFrom}_to_${receiptsFilterTo}`;
+  const old = btn.textContent; btn.disabled = true;
+  try {
+    const files = [];
+    for (let i = 0; i < invoices.length; i++) {
+      btn.textContent = `Making PDFs ${i + 1}/${invoices.length}\u2026`;
+      files.push(await receiptPdfBytes(invoiceToSaleObject(invoices[i])));
+    }
+    btn.textContent = "Zipping\u2026";
+    const zip = await buildZip(files);
+    await shareOrDownloadFile(zip, `RRG_Receipts_${label}.zip`, "application/zip");
+  } catch (e) { alert("Couldn't make the ZIP: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+function crc32(bytes){
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function dosDateTime(d){
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (Math.floor(d.getSeconds() / 2));
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  return { time, date };
+}
+// files: [{name, bytes: Uint8Array}]. Returns a Blob ready to download.
+// Deflates raw bytes using the browser's own built-in compressor (Chrome/Edge have supported
+// this since 2020) -- no compression library needed. "deflate-raw" specifically (not "deflate")
+// is the raw DEFLATE bitstream with no zlib header/trailer, which is exactly what the ZIP format
+// itself expects for a compression-method-8 entry.
+async function deflateRawBytes(bytes){
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function buildZip(files){
+  const { time, date } = dosDateTime(new Date());
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const canCompress = typeof CompressionStream !== "undefined";
+  for (const f of files) {
+    const nameBytes = new TextEncoder().encode(f.name);
+    const crc = crc32(f.bytes); // CRC-32 is always of the UNCOMPRESSED data, regardless of method
+    const uncompressedSize = f.bytes.length;
+
+    let storedBytes = f.bytes;
+    let method = 0; // 0 = stored (no compression)
+    if (canCompress) {
+      try {
+        const deflated = await deflateRawBytes(f.bytes);
+        if (deflated.length < uncompressedSize) { storedBytes = deflated; method = 8; } // 8 = deflate
+      } catch(e) { /* fall back to stored for this one file */ }
+    }
+    const compressedSize = storedBytes.length;
+
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0, true);
+    local.setUint16(8, method, true);
+    local.setUint16(10, time, true);
+    local.setUint16(12, date, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, compressedSize, true);
+    local.setUint32(22, uncompressedSize, true);
+    local.setUint16(26, nameBytes.length, true);
+    local.setUint16(28, 0, true);
+    localParts.push(new Uint8Array(local.buffer), nameBytes, storedBytes);
+
+    const central = new DataView(new ArrayBuffer(46));
+    central.setUint32(0, 0x02014b50, true);
+    central.setUint16(4, 20, true);
+    central.setUint16(6, 20, true);
+    central.setUint16(8, 0, true);
+    central.setUint16(10, method, true);
+    central.setUint16(12, time, true);
+    central.setUint16(14, date, true);
+    central.setUint32(16, crc, true);
+    central.setUint32(20, compressedSize, true);
+    central.setUint32(24, uncompressedSize, true);
+    central.setUint16(28, nameBytes.length, true);
+    central.setUint16(30, 0, true);
+    central.setUint16(32, 0, true);
+    central.setUint16(34, 0, true);
+    central.setUint16(36, 0, true);
+    central.setUint32(38, 0, true);
+    central.setUint32(42, offset, true);
+    centralParts.push(new Uint8Array(central.buffer), nameBytes);
+
+    offset += 30 + nameBytes.length + compressedSize;
+  }
+  const centralStart = offset;
+  let centralSize = 0;
+  for (let i = 0; i < centralParts.length; i += 2) centralSize += centralParts[i].length + centralParts[i+1].length;
+
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(4, 0, true);
+  end.setUint16(6, 0, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, centralStart, true);
+  end.setUint16(20, 0, true);
+
+  return new Blob([...localParts, ...centralParts, new Uint8Array(end.buffer)], { type: "application/zip" });
+}
+
+
+
+/* ---------------------- Admin: Cash Register on the phone (Build 3, part 2) ----------------------
+   Admin login only, behind the dashboard switch adminPhoneTools.cashRegister. Same records and the
+   same arithmetic as the dashboard's Cash Register: expected cash = Opening Float + Cash collected that
+   day (Split bills unwrapped, Receipts-tab adjustments added once per invoice); Bank Credit compared
+   with the day's UPI / Card totals. Every re-save keeps the earlier version in record.history. */
+const PHONE_CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
+let cashTabDate = null, cashTabData = null, cashTabEditing = {};
+async function loadCashTabData(date){
+  const prefix = invNoPrefix(date);
+  const [s, sp, adj, cc] = await Promise.all([
+    fsDb.collection("sessions").where("date", "==", date).get(),
+    fsDb.collection("paymentSplits").where("invoiceNo", ">=", prefix).where("invoiceNo", "<", prefix + "\uf8ff").get(),
+    fsDb.collection("invoiceAdjustments").where("invoiceNo", ">=", prefix).where("invoiceNo", "<", prefix + "\uf8ff").get(),
+    fsDb.collection("cashCounts").where("date", "==", date).get()
+  ]);
+  cashTabData = { date,
+    sessions: s.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })),
+    splits: sp.docs.map(d => d.data()), adjs: adj.docs.map(d => d.data()),
+    counts: cc.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })) };
+}
+// Same as the dashboard's paymentMethodTotalsForDate, on this day's loaded records
+function cashTabMethodTotals(){
+  const D = cashTabData, totals = { Cash: { amount: 0, count: 0 }, UPI: { amount: 0, count: 0 }, Card: { amount: 0, count: 0 } };
+  const seen = new Set();
+  for (const s of D.sessions) {
+    if (s.date !== D.date) continue;
+    const amt = collectedAmount(s);
+    if (amt <= 0) continue;
+    const key = s.invoiceNo || ("noinv-" + s.id), first = !seen.has(key);
+    if (first) seen.add(key);
+    if (s.method === "Split") {
+      if (!s.invoiceNo || !first) continue;
+      const split = D.splits.find(p => p.invoiceNo === s.invoiceNo);
+      if (split) split.splits.forEach(row => { if (!totals[row.method]) totals[row.method] = { amount: 0, count: 0 }; totals[row.method].amount += row.amount; totals[row.method].count += 1; });
+    } else {
+      if (!totals[s.method]) totals[s.method] = { amount: 0, count: 0 };
+      totals[s.method].amount += amt;
+      if (first) totals[s.method].count += 1;
+    }
+  }
+  const seenAdj = new Set();
+  for (const s of D.sessions) {
+    if (s.date !== D.date || !s.invoiceNo || seenAdj.has(s.invoiceNo)) continue;
+    seenAdj.add(s.invoiceNo);
+    const adj = D.adjs.find(a => a.invoiceNo === s.invoiceNo);
+    if (!adj) continue;
+    if (!totals[adj.method]) totals[adj.method] = { amount: 0, count: 0 };
+    totals[adj.method].amount += adj.amount; totals[adj.method].count += 1;
+  }
+  return totals;
+}
+function cashDenomTotal(obj){ return PHONE_CASH_DENOMS.reduce((a, d) => a + (parseInt(obj[d], 10) || 0) * d, 0); }
+function cashResultText(v){ return v === 0 ? "\u2705 Matched" : (v > 0 ? `\u26A0 Over by ${fmtMoney(v)}` : `\u26A0 Short by ${fmtMoney(Math.abs(v))}`); }
+function cashHistoryHTML(rec){
+  if (!rec || !Array.isArray(rec.history) || !rec.history.length) return "";
+  return `<details style="margin-top:4px; font-size:12px;"><summary style="cursor:pointer;">Edited ${rec.history.length} time${rec.history.length === 1 ? "" : "s"} \u2014 earlier saves</summary>
+    ${rec.history.slice().reverse().map(h => `<div style="opacity:0.8;">${escapeHtml(h.time || "")} \u00b7 ${escapeHtml(h.staff || "")} \u00b7 ${fmtMoney(h.total || 0)}${h.count ? ` (${h.count} txns)` : ""}${h.variance != null ? ` \u00b7 ${h.variance === 0 ? "matched" : (h.variance > 0 ? "over " + fmtMoney(h.variance) : "short " + fmtMoney(Math.abs(h.variance)))}` : ""}</div>`).join("")}</details>`;
+}
+async function saveCashCount(record, prev){
+  record.savedAt = Date.now();
+  if (prev) {
+    const h = Array.isArray(prev.history) ? prev.history.slice(-19) : [];
+    h.push({ date: prev.date, time: prev.time, staff: prev.staff, total: prev.total, count: prev.count != null ? prev.count : null, variance: prev.variance != null ? prev.variance : null, savedAt: prev.savedAt || null });
+    record.history = h;
+  }
+  const id = prev ? prev.id : nextLocalId();
+  await fsDb.collection("cashCounts").doc(String(id)).set(record); // same shape as the dashboard: id is the document key
+}
+async function renderCashTab(force){
+  const el = document.getElementById("mainContent");
+  if (!el) return;
+  el.classList.remove("op-grid");
+  const root = document.getElementById("cashTabRoot");
+  if (!force && root && root.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return; // don't wipe what's being typed
+  if (!cashTabDate) cashTabDate = todayStr();
+  if (!cashTabData || cashTabData.date !== cashTabDate || force) {
+    el.innerHTML = `<p class="panel-help">Loading\u2026</p>`;
+    try { await loadCashTabData(cashTabDate); }
+    catch (e) { el.innerHTML = `<p class="panel-help">Couldn't load the Cash Register: ${escapeHtml(e.message)}</p>`; return; }
+  }
+  const D = cashTabData, T = cashTabMethodTotals();
+  const opening = D.counts.find(c => c.type === "opening"), closing = D.counts.find(c => c.type === "closing");
+  const upi = D.counts.find(c => c.type === "upiReceived"), card = D.counts.find(c => c.type === "cardReceived");
+  const expected = (opening ? opening.total : 0) + T.Cash.amount;
+  const denomForm = (prefix, existing) => `<div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:6px;">${PHONE_CASH_DENOMS.map(d => `
+    <label style="font-size:12px;">\u20B9${d}<input type="number" min="0" inputmode="numeric" class="cash-denom" data-prefix="${prefix}" data-denom="${d}" value="${existing && existing[d] ? existing[d] : ""}" placeholder="0" style="width:100%;"></label>`).join("")}</div>
+    <div style="margin:6px 0;">Total: <b id="${prefix}Total">${fmtMoney(existing ? cashDenomTotal(existing) : 0)}</b>${prefix === "closing" ? ` \u00b7 <span id="closingLive"></span>` : ""}</div>`;
+  const savedCard = (title, rec, lines, editId) => `<div style="border:1px solid rgba(128,128,128,0.35); border-radius:8px; padding:8px 10px; margin-bottom:6px;">
+    <div><b>${title}</b> ${lines}</div><div style="font-size:12px; opacity:0.75;">By ${escapeHtml(rec.staff || "")} at ${escapeHtml(rec.time || "")}</div>${cashHistoryHTML(rec)}
+    <button class="btn btn-outline btn-small" id="${editId}" style="margin-top:6px;">Edit</button></div>`;
+  const bankBlock = (kind, label, rec, dash) => {
+    const editing = !rec || cashTabEditing[kind];
+    if (!editing) return savedCard(label, rec, `${fmtMoney(rec.total)}${rec.count ? ` (${rec.count} txns)` : ""} \u00b7 Dashboard ${fmtMoney(rec.expected)} \u00b7 <b>${cashResultText(rec.variance)}</b>`, `cashEdit_${kind}`);
+    return `<div style="border:1px solid rgba(128,128,128,0.35); border-radius:8px; padding:8px 10px; margin-bottom:6px;"><b>${label}</b> \u2014 dashboard shows ${fmtMoney(dash.amount)} (${dash.count} txns)
+      <div style="display:flex; gap:6px; margin-top:6px;"><input type="number" inputmode="decimal" id="cashAmt_${kind}" placeholder="Amount received" value="${rec ? rec.total : ""}" style="flex:2;"><input type="number" inputmode="numeric" id="cashCnt_${kind}" placeholder="Txns" value="${rec && rec.count ? rec.count : ""}" style="flex:1;"></div>
+      <div id="cashVar_${kind}" style="font-size:13px; margin:4px 0;"></div>
+      <button class="btn btn-primary btn-small" id="cashSave_${kind}">Save ${label}</button>${rec ? ` <button class="btn btn-outline btn-small" id="cashCancel_${kind}">Cancel</button>` : ""}</div>`;
+  };
+  el.innerHTML = `<div id="cashTabRoot">
+    <div class="panel">
+      <div class="panel-title">Cash Register</div>
+      <p class="panel-help">TCS staff count in the shop's offline file: their counts show here only after they press "Send to Firebase". Enter a count here only when staff will NOT enter the same one in the shop file, or it will be saved twice.</p>
+      <div class="btn-group"><div class="filter-field">Date<input type="date" id="cashDate" value="${cashTabDate}" max="${todayStr()}"></div>
+        <button class="btn btn-outline btn-small" id="cashRefresh">Refresh</button></div>
+      <table class="data-table" style="margin-top:8px;">
+        <tr><td>Opening Float</td><td>${opening ? fmtMoney(opening.total) : "\u2014 not entered"}</td></tr>
+        <tr><td>Cash collected</td><td>${fmtMoney(T.Cash.amount)} (${T.Cash.count})</td></tr>
+        <tr><td><b>Expected cash in drawer</b></td><td><b>${opening ? fmtMoney(expected) : "\u2014"}</b></td></tr>
+        <tr><td>UPI collected</td><td>${fmtMoney(T.UPI.amount)} (${T.UPI.count})</td></tr>
+        <tr><td>Card collected</td><td>${fmtMoney(T.Card.amount)} (${T.Card.count})</td></tr>
+        <tr><td>Closing count</td><td>${closing ? `${fmtMoney(closing.total)} \u00b7 <b>${cashResultText(closing.variance)}</b>` : "\u2014 not entered"}</td></tr>
+      </table>
+    </div>
+    <div class="panel"><div class="panel-title">Opening Float</div>
+      ${(!opening || cashTabEditing.opening) ? `${denomForm("opening", opening && opening.denominations)}<button class="btn btn-primary btn-small" id="cashSaveOpening">Save Opening Float</button>${opening ? ` <button class="btn btn-outline btn-small" id="cashCancel_opening">Cancel</button>` : ""}`
+        : savedCard("Opening", opening, fmtMoney(opening.total), "cashEdit_opening")}
+    </div>
+    <div class="panel"><div class="panel-title">Bank Credit Check</div>
+      ${bankBlock("upi", "UPI", upi, T.UPI)}${bankBlock("card", "Card", card, T.Card)}
+    </div>
+    <div class="panel"><div class="panel-title">Closing Count</div>
+      ${(!closing || cashTabEditing.closing) ? `${denomForm("closing", closing && closing.denominations)}<button class="btn btn-primary btn-small" id="cashSaveClosing" ${opening ? "" : "disabled"}>Save Closing Count</button>${opening ? "" : ` <span style="font-size:12px;">(enter Opening Float first)</span>`}${closing ? ` <button class="btn btn-outline btn-small" id="cashCancel_closing">Cancel</button>` : ""}`
+        : savedCard("Counted", closing, `${fmtMoney(closing.total)} \u00b7 Expected ${fmtMoney(closing.expected)} \u00b7 <b>${cashResultText(closing.variance)}</b>`, "cashEdit_closing")}
+    </div></div>`;
+  const $ = (id) => document.getElementById(id);
+  const dateEl = $("cashDate");
+  if (dateEl.showPicker) dateEl.addEventListener("click", () => { try { dateEl.showPicker(); } catch (_) {} });
+  dateEl.addEventListener("change", () => { if (dateEl.value) { cashTabDate = dateEl.value; cashTabEditing = {}; renderCashTab(true); } });
+  $("cashRefresh").addEventListener("click", () => renderCashTab(true));
+  const readDenoms = (prefix) => { const o = {}; el.querySelectorAll(`.cash-denom[data-prefix="${prefix}"]`).forEach(i => { o[i.dataset.denom] = i.value; }); return o; };
+  const liveTotals = () => {
+    ["opening", "closing"].forEach(prefix => { const t = $(prefix + "Total"); if (t) t.textContent = fmtMoney(cashDenomTotal(readDenoms(prefix))); });
+    const lv = $("closingLive");
+    if (lv && opening) { const v = cashDenomTotal(readDenoms("closing")) - expected; lv.innerHTML = cashDenomTotal(readDenoms("closing")) ? `Expected ${fmtMoney(expected)} \u00b7 <b>${cashResultText(v)}</b>` : `Expected ${fmtMoney(expected)}`; }
+  };
+  el.querySelectorAll(".cash-denom").forEach(i => i.addEventListener("input", liveTotals)); liveTotals();
+  const now = () => new Date();
+  const who = () => currentStaffName();
+  const run = async (btn, fn) => { btn.disabled = true; try { await fn(); cashTabEditing = {}; await renderCashTab(true); } catch (e) { alert("Couldn't save: " + e.message); btn.disabled = false; } };
+  if ($("cashSaveOpening")) $("cashSaveOpening").addEventListener("click", (e) => run(e.currentTarget, async () => {
+    const den = readDenoms("opening"), total = cashDenomTotal(den);
+    await saveCashCount({ date: D.date, type: "opening", staff: who(), time: timeStr(now()), denominations: den, total }, opening || null);
+  }));
+  if ($("cashSaveClosing")) $("cashSaveClosing").addEventListener("click", (e) => run(e.currentTarget, async () => {
+    const den = readDenoms("closing"), total = cashDenomTotal(den);
+    await saveCashCount({ date: D.date, type: "closing", staff: who(), time: timeStr(now()), denominations: den, total, expected, variance: total - expected }, closing || null);
+  }));
+  [["upi", upi, T.UPI, "upiReceived"], ["card", card, T.Card, "cardReceived"]].forEach(([kind, rec, dash, type]) => {
+    const amt = $("cashAmt_" + kind), varEl = $("cashVar_" + kind);
+    if (amt) {
+      const upd = () => { const v = parseFloat(amt.value); varEl.innerHTML = isNaN(v) ? "" : `<b>${cashResultText(v - dash.amount)}</b>`; };
+      amt.addEventListener("input", upd); upd();
+      $("cashSave_" + kind).addEventListener("click", (e) => run(e.currentTarget, async () => {
+        const val = parseFloat(amt.value); if (isNaN(val) || val < 0) throw new Error("enter the amount received");
+        const count = parseInt($("cashCnt_" + kind).value, 10) || 0;
+        await saveCashCount({ date: D.date, type, staff: who(), time: timeStr(now()), total: val, count, expected: dash.amount, variance: val - dash.amount }, rec || null);
+      }));
+    }
+  });
+  ["opening", "closing", "upi", "card"].forEach(k => {
+    const ed = $("cashEdit_" + k), ca = $("cashCancel_" + k);
+    if (ed) ed.addEventListener("click", () => { cashTabEditing[k] = true; renderCashTab(); });
+    if (ca) ca.addEventListener("click", () => { cashTabEditing[k] = false; renderCashTab(); });
+  });
+}
+
 async function renderMallShareTab(){
   const el = document.getElementById("mainContent");
   if (!el) return;
@@ -1496,7 +2366,20 @@ async function renderMallShareTab(){
   const earliest = dates[0] || todayStr();
   const todayS = todayStr();
 
+  const aptMs = liveConfig.adminPhoneTools || {};
+  const isAdminMs = currentUserRole === "admin";
+  const showDps = isAdminMs && !!aptMs.dailySummary;
+  const hideRs = isAdminMs && !aptMs.revenueShare; // Mall Admin always sees these, exactly as before
   el.innerHTML = `
+    ${showDps ? `<div class="panel">
+      <div class="panel-title">Daily Performance Summary</div>
+      <p class="panel-help">Same message as the dashboard's Mall Share tab. Pick a date, then Copy or Share.</p>
+      <div class="btn-group"><div class="filter-field">Date<input type="date" id="dpsDate" value="${todayS}" max="${todayS}"></div></div>
+      <textarea id="dpsOutput" readonly style="width:100%; min-height:300px; margin-top:10px; font-family:monospace; font-size:13px; padding:10px; border-radius:6px;"></textarea>
+      <button class="btn btn-primary btn-small" id="dpsCopyBtn" style="margin-top:8px;">Copy</button>
+      <button class="btn btn-outline btn-small" id="dpsShareBtn" style="margin-top:8px;">Share</button>
+    </div>` : ""}
+    <div style="${hideRs ? "display:none;" : ""}">
     <div class="panel">
       <div class="panel-title">Mall Share \u2014 Overview</div>
       <table class="data-table">
@@ -1535,7 +2418,9 @@ async function renderMallShareTab(){
       <button class="btn btn-primary btn-small" id="srExportPdfBtn">Export PDF</button>
       <button class="btn btn-outline btn-small" id="srExportExcelBtn">Export Excel</button>
     </div>
+    </div>
   `;
+  if (showDps) wireDailyPerformanceSummary();
 
   document.getElementById("msOverviewSettled").textContent = fmtMoney(settledAmountForRange(earliest, todayS));
   document.getElementById("msOverviewOutstanding").textContent = fmtMoney(unsettledAmountForRange(earliest, todayS));
@@ -1571,8 +2456,8 @@ async function renderMallShareTab(){
     document.getElementById("rsrTo").value = todayStrFromDate(lastMonthEnd);
     renderRsrPreview();
   });
-  document.getElementById("rsrExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementPDF(buildAdhocRec(from, to)); }));
-  document.getElementById("rsrExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; exportRevenueShareStatementExcel(buildAdhocRec(from, to)); }));
+  document.getElementById("rsrExportPdfBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; if (currentUserRole === "admin") await adminExportRevenueShare(from, to, "pdf"); else exportRevenueShareStatementPDF(buildAdhocRec(from, to)); }));
+  document.getElementById("rsrExportExcelBtn").addEventListener("click", (e) => withBusyButton(e.target, async () => { const from = document.getElementById("rsrFrom").value || earliest; const to = document.getElementById("rsrTo").value || todayS; if (currentUserRole === "admin") await adminExportRevenueShare(from, to, "excel"); else exportRevenueShareStatementExcel(buildAdhocRec(from, to)); }));
 
   document.getElementById("srLast1Month").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-1, now.getDate())); document.getElementById("srTo").value = todayS; });
   document.getElementById("srLast3Months").addEventListener("click", (e) => { markActiveQuickRange(e.target); const now = new Date(); document.getElementById("srFrom").value = todayStrFromDate(new Date(now.getFullYear(), now.getMonth()-3, now.getDate())); document.getElementById("srTo").value = todayS; });
