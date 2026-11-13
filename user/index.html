@@ -586,6 +586,7 @@ function computeVisibleTabs(){
     const apt = liveConfig.adminPhoneTools || {};
     if (currentUserRole === "admin" && (apt.dailySummary || apt.revenueShare)) allTabs.push({ id: "mdshare", label: "Mall Share" });
     if (currentUserRole === "admin" && apt.cashRegister) allTabs.push({ id: "cash", label: "Cash" });
+    if (currentUserRole === "admin" && apt.analytics) allTabs.push({ id: "analytics", label: "Analytics" });
     allTabs.push({ id: "settings", label: "Settings" });
   }
   // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
@@ -2914,7 +2915,8 @@ async function renderAnalyticsTab(){
   const weekStart = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()));
   const monthStart = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1));
 
-  const revenuePanel = isVisible("analytics.revenue") ? `
+  const showAll = currentUserRole === "admin"; // the visibility settings file is only for Mall Admin; Admin sees everything
+  const revenuePanel = (showAll || isVisible("analytics.revenue")) ? `
     <div class="panel">
       <div class="panel-title">Revenue</div>
       <table>
@@ -2926,7 +2928,7 @@ async function renderAnalyticsTab(){
     </div>` : "";
 
   let monthlyPanel = "";
-  if (isVisible("analytics.monthlyRevenue")) {
+  if (showAll || isVisible("analytics.monthlyRevenue")) {
     const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
     const monthRows = MONTH_NAMES.map((name, i) => {
       const monthFrom = `2026-${String(i+1).padStart(2,"0")}-01`;
@@ -2951,11 +2953,275 @@ async function renderAnalyticsTab(){
   }
 
   // Optional panels -- each stays hidden until its key is set to true in the visibility settings file.
-  const salesTrendPanelHtml = isExplicitlyOn("analytics.salesTrend") ? `<div class="panel" id="salesTrendPanel"></div>` : "";
-  const relaxedPanelHtml = isExplicitlyOn("analytics.customersRelaxed") ? `<div class="panel" id="customersRelaxedPanel"></div>` : "";
-  el.innerHTML = (revenuePanel + salesTrendPanelHtml + relaxedPanelHtml + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
+  const salesTrendPanelHtml = (showAll || isExplicitlyOn("analytics.salesTrend")) ? `<div class="panel" id="salesTrendPanel"></div>` : "";
+  const relaxedPanelHtml = (showAll || isExplicitlyOn("analytics.customersRelaxed")) ? `<div class="panel" id="customersRelaxedPanel"></div>` : "";
+  const hourlyPanelHtml = (showAll || isExplicitlyOn("analytics.hourlyPerformance")) ? `<div class="panel" id="hourlyPerfPanel"></div>` : "";
+  el.innerHTML = (revenuePanel + salesTrendPanelHtml + relaxedPanelHtml + hourlyPanelHtml + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
   initSalesTrendPanel();
   initCustomersRelaxedPanel();
+  initHourlyPerformancePanel();
+}
+
+/* ---------------------- Hourly Performance (Analytics) ----------------------
+   Copied from the desk dashboard (same counting rules); this page reads mallShareSessions / mallShareAdjustments,
+   and exports go to the Share sheet. Shown to Admin always; to Mall Admin only when analytics.hourlyPerformance
+   is set to true in the visibility settings file (hidden until then).
+   Owner's rules: count only paid sessions that actually ran (isRelaxedSession), placed in the hour the
+   chair actually STARTED (startTs), not the bill time. Revenue = collected money (collectedAmount) plus
+   any invoice adjustment, added once per invoice to that invoice's first session's hour. Periods:
+   Day / Month / Year / Overall, with an All days / Weekdays (Mon-Fri) / Weekends (Sat-Sun) filter.
+   "Quietest hour" is picked only from hours that had at least one customer; zero-customer shop hours
+   are listed separately. Shop hours shown: 9 AM - 11 PM, plus any other hour that has sessions. */
+let hourlyState = { period: "day", date: null, month: null, year: null, dayType: "all" };
+const SHOP_FIRST_HOUR = 9, SHOP_LAST_HOUR = 22; // shop hours 9 AM - 11 PM; anything outside is listed as a warning, never charted
+
+function hourSlotLabel(h){
+  const to12 = (n) => ((n % 12) || 12) + (n < 12 ? " AM" : " PM");
+  return `${to12(h)} \u2013 ${to12((h + 1) % 24)}`;
+}
+function hourlyPeriodLabel(){
+  const st = hourlyState;
+  let p;
+  if (st.period === "day") p = `${dmyShort(st.date)} (${salesWeekday(st.date)})`;
+  else if (st.period === "month") p = salesMonthLabel(st.month);
+  else if (st.period === "year") p = `Year ${st.year}`;
+  else p = "Overall (all time)";
+  if (st.period !== "day" && st.dayType !== "all") p += st.dayType === "weekdays" ? " \u00b7 Weekdays (Mon\u2013Fri)" : " \u00b7 Weekends (Sat\u2013Sun)";
+  return p;
+}
+function hourlyStats(){
+  const st = hourlyState;
+  const isWeekend = (dateStr) => { const [y, m, d] = dateStr.split("-").map(Number); const wd = new Date(y, m - 1, d).getDay(); return wd === 0 || wd === 6; };
+  const inPeriod = (s) => {
+    const d = s.date || "";
+    if (st.period === "day") return d === st.date;
+    if (st.period === "month" && d.slice(0, 7) !== st.month) return false;
+    if (st.period === "year" && d.slice(0, 4) !== String(st.year)) return false;
+    if (st.dayType === "weekdays" && isWeekend(d)) return false;
+    if (st.dayType === "weekends" && !isWeekend(d)) return false;
+    return true;
+  };
+  const byHour = {}, days = new Set(), seenInv = new Set(), outside = [];
+  let totalSessions = 0, totalRevenue = 0;
+  mallShareSessions.forEach(s => {
+    if (!isRelaxedSessionMS(s) || !s.startTs || !s.date || !inPeriod(s)) return;
+    const h = new Date(s.startTs).getHours();
+    if (h < SHOP_FIRST_HOUR || h > SHOP_LAST_HOUR) { outside.push(s); return; }
+    const r = byHour[h] || (byHour[h] = { hour: h, sessions: 0, revenue: 0, list: [] });
+    let rev = collectedAmount(s);
+    if (s.invoiceNo && !seenInv.has(s.invoiceNo)) { seenInv.add(s.invoiceNo); { const adj = msAdjustmentFor(s.invoiceNo); if (adj) rev += adj.amount; } }
+    r.sessions++; r.revenue += rev; r.list.push(s); totalSessions++; totalRevenue += rev;
+    days.add(s.date);
+  });
+  const hours = [];
+  for (let h = SHOP_FIRST_HOUR; h <= SHOP_LAST_HOUR; h++) hours.push(h);
+  const tradingDays = days.size;
+  const rows = hours.map(h => { const r = byHour[h] || { hour: h, sessions: 0, revenue: 0, list: [] };
+    return { hour: h, label: hourSlotLabel(h), sessions: r.sessions, revenue: r.revenue, list: r.list,
+      share: totalSessions ? r.sessions / totalSessions * 100 : 0, avgPerDay: tradingDays ? r.sessions / tradingDays : 0 }; });
+  const used = rows.filter(r => r.sessions > 0);
+  let busiest = null, quietest = null, bestRev = null;
+  used.forEach(r => {
+    if (!busiest || r.sessions > busiest.sessions || (r.sessions === busiest.sessions && r.revenue > busiest.revenue)) busiest = r;
+    if (!quietest || r.sessions < quietest.sessions || (r.sessions === quietest.sessions && r.revenue < quietest.revenue)) quietest = r;
+    if (!bestRev || r.revenue > bestRev.revenue) bestRev = r;
+  });
+  const zeroHours = rows.filter(r => r.sessions === 0);
+  return { rows, busiest, quietest, bestRev, zeroHours, totalSessions, totalRevenue, tradingDays, outside, label: hourlyPeriodLabel() };
+}
+
+function initHourlyPerformancePanel(){
+  const el = document.getElementById("hourlyPerfPanel");
+  if (!el) return;
+  const st = hourlyState, todayS = todayStr();
+  if (!st.date) st.date = todayS;
+  if (!st.month) st.month = todayS.slice(0, 7);
+  if (!st.year) st.year = Number(todayS.slice(0, 4));
+  const years = Array.from(new Set(mallShareSessions.map(s => (s.date || "").slice(0, 4)).filter(Boolean).concat([todayS.slice(0, 4)]))).sort().reverse();
+  const S = hourlyStats();
+  const multi = st.period !== "day";
+  const pct = (v) => v.toFixed(v >= 10 ? 0 : 1) + "%";
+  const avg = (v) => v.toFixed(v >= 10 ? 0 : 1);
+  const card = (label, value, sub, color) => `<div style="flex:1 1 200px; border:1px solid rgba(128,128,128,0.35); border-radius:10px; padding:10px 14px;">
+      <div style="font-size:12px; opacity:0.75;">${label}</div>
+      <div style="font-size:18px; font-weight:700; margin-top:2px; ${color ? "color:" + color + ";" : ""}">${value}</div>
+      <div style="font-size:12px; opacity:0.7; margin-top:2px;">${sub}</div></div>`;
+  const hourSub = (r) => r ? `${r.sessions} session${r.sessions === 1 ? "" : "s"} \u00b7 ${pct(r.share)}${multi ? ` \u00b7 avg ${avg(r.avgPerDay)}/day` : ""} \u00b7 ${fmtMoney(r.revenue)}` : "No sessions in this selection";
+
+  el.innerHTML = `
+    <div class="panel-title">Hourly Performance</div>
+    <p class="panel-help">Which hours customers actually use the chairs: paid sessions that ran, by the hour the chair started.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:stretch; margin-bottom:10px;">
+    <div style="display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; flex:1 1 420px; margin:0; align-content:flex-start;">
+      <label>Period <select id="hpPeriod">
+        <option value="day" ${st.period === "day" ? "selected" : ""}>Day</option>
+        <option value="month" ${st.period === "month" ? "selected" : ""}>Month</option>
+        <option value="year" ${st.period === "year" ? "selected" : ""}>Year</option>
+        <option value="overall" ${st.period === "overall" ? "selected" : ""}>Overall</option>
+      </select></label>
+      ${st.period === "day" ? `<label>Date <input type="date" id="hpDate" value="${st.date}" max="${todayS}" style="cursor:pointer;" title="Click to pick a date"></label>` : ""}
+      ${st.period === "month" ? `<label>Month <input type="month" id="hpMonth" value="${st.month}" max="${todayS.slice(0, 7)}" style="cursor:pointer;" title="Click to pick a month"></label>` : ""}
+      ${st.period === "year" ? `<label>Year <select id="hpYear">${years.map(y => `<option ${String(st.year) === y ? "selected" : ""}>${y}</option>`).join("")}</select></label>` : ""}
+      ${multi ? `<label>Days <select id="hpDayType">
+        <option value="all" ${st.dayType === "all" ? "selected" : ""}>All days</option>
+        <option value="weekdays" ${st.dayType === "weekdays" ? "selected" : ""}>Weekdays (Mon\u2013Fri)</option>
+        <option value="weekends" ${st.dayType === "weekends" ? "selected" : ""}>Weekends (Sat\u2013Sun)</option>
+      </select></label>` : ""}
+      <button class="btn btn-small btn-outline" id="exportHourlyExcel">Export Excel</button>
+      <button class="btn btn-small btn-outline" id="exportHourlyPDF">Export PDF</button>
+    </div>
+    <div id="hpSummaryBox" style="flex:1 1 320px; border:1px solid var(--copper); border-radius:12px; padding:12px 16px; display:flex; flex-wrap:wrap; gap:6px 22px; align-items:center;">
+      <div style="flex:1 1 100%; font-size:15px; font-weight:700; color:var(--copper);">\u{1F4C5} ${escapeHtml(S.label)}</div>
+      <div><div style="font-size:12px; opacity:0.75;">\u{1F465} Total sessions</div><div style="font-size:28px; font-weight:800;">${S.totalSessions.toLocaleString("en-IN")}</div></div>
+      <div><div style="font-size:12px; opacity:0.75;">\u{1F4B0} Total value</div><div style="font-size:28px; font-weight:800;">${fmtMoney(S.totalRevenue)}</div></div>
+      ${multi ? `<div style="flex:1 1 100%; font-size:12px; opacity:0.75;">over ${S.tradingDays} trading day${S.tradingDays === 1 ? "" : "s"}${S.tradingDays ? ` \u00b7 avg ${(S.totalSessions / S.tradingDays).toFixed(1)} sessions / ${fmtMoney(S.totalRevenue / S.tradingDays)} per day` : ""}</div>` : ""}
+    </div>
+    </div>
+    ${S.outside.length ? `<div style="margin:0 0 10px; padding:8px 12px; border:1px solid #d9534f; border-radius:8px; font-size:13px;">
+      \u26A0\uFE0F <b>${S.outside.length} session${S.outside.length === 1 ? " has" : "s have"} a chair-start time outside shop hours</b> (before 9 AM or after 11 PM), so ${S.outside.length === 1 ? "it isn't" : "they aren't"} in the chart.
+      <button class="btn btn-small btn-outline" id="hpOutsideBtn" style="margin-left:6px;">View list</button></div>` : ""}
+    <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+      ${card("\u{1F525} Busiest hour", S.busiest ? S.busiest.label : "\u2014", hourSub(S.busiest), "#2fb67c")}
+      ${card("\u{1F319} Quietest hour (with customers)", S.quietest ? S.quietest.label : "\u2014", hourSub(S.quietest), "#d9534f")}
+      ${card("\u{1F4B0} Best revenue hour", S.bestRev ? S.bestRev.label : "\u2014", S.bestRev ? `${fmtMoney(S.bestRev.revenue)} \u00b7 ${S.bestRev.sessions} sessions` : "\u2014")}
+      ${card("\u{1F6AB} Hours with no customers", S.totalSessions ? String(S.zeroHours.length) : "\u2014", S.totalSessions ? (S.zeroHours.length ? S.zeroHours.map(r => r.label).join(", ") : "Every shop hour had customers") : "No sessions in this selection")}
+    </div>
+    <div id="hpChart" style="position:relative; width:100%;"></div>
+    <div style="font-size:12px; opacity:0.65; margin-top:4px;">Click a bar to list its sessions.</div>
+    <div id="hpList"></div>
+    <div style="overflow-x:auto; margin-top:10px;">
+    <table class="data-table" style="white-space:nowrap;">
+      <thead><tr><th>Hour</th><th>Sessions</th><th>Share</th>${multi ? "<th>Avg per day</th>" : ""}<th>Revenue</th></tr></thead>
+      <tbody>${S.rows.map(r => `<tr${S.busiest && r.hour === S.busiest.hour ? ' style="color:#2fb67c;"' : (S.quietest && r.hour === S.quietest.hour ? ' style="color:#d9534f;"' : "")}>
+          <td>${r.label}</td><td>${r.sessions}</td><td>${S.totalSessions ? pct(r.share) : "\u2014"}</td>${multi ? `<td>${avg(r.avgPerDay)}</td>` : ""}<td>${fmtMoney(r.revenue)}</td></tr>`).join("")}
+        <tr><td><b>Total</b></td><td><b>${S.totalSessions}</b></td><td>${S.totalSessions ? "100%" : "\u2014"}</td>${multi ? `<td><b>${S.tradingDays ? avg(S.totalSessions / S.tradingDays) : "\u2014"}</b></td>` : ""}<td><b>${fmtMoney(S.totalRevenue)}</b></td></tr>
+      </tbody>
+    </table>
+    </div>`;
+
+  const rerender = () => initHourlyPerformancePanel();
+  document.getElementById("hpPeriod").addEventListener("change", (e) => { st.period = e.target.value; rerender(); });
+  if (document.getElementById("hpDate")) document.getElementById("hpDate").addEventListener("change", (e) => { if (e.target.value) { st.date = e.target.value; rerender(); } });
+  // Click anywhere in the Date / Month box to open the browser's own calendar (no typing needed)
+  ["hpDate", "hpMonth"].forEach(id => { const el = document.getElementById(id); if (el && el.showPicker) el.addEventListener("click", () => { try { el.showPicker(); } catch (_) {} }); });
+  if (document.getElementById("hpMonth")) document.getElementById("hpMonth").addEventListener("change", (e) => { if (e.target.value) { st.month = e.target.value; rerender(); } });
+  if (document.getElementById("hpYear")) document.getElementById("hpYear").addEventListener("change", (e) => { st.year = Number(e.target.value); rerender(); });
+  if (document.getElementById("hpDayType")) document.getElementById("hpDayType").addEventListener("change", (e) => { st.dayType = e.target.value; rerender(); });
+  document.getElementById("exportHourlyExcel").addEventListener("click", () => exportHourlyExcel(S, multi));
+  document.getElementById("exportHourlyPDF").addEventListener("click", () => exportHourlyPDF(S, multi));
+  const listBox = document.getElementById("hpList");
+  if (document.getElementById("hpOutsideBtn")) document.getElementById("hpOutsideBtn").addEventListener("click", () => renderHourlyList(listBox, `Outside shop hours \u2014 ${S.label}`, S.outside));
+  drawHourlyChart(document.getElementById("hpChart"), S, multi, (i) => renderHourlyList(listBox, `${S.rows[i].label} \u2014 ${S.label}`, S.rows[i].list));
+}
+
+// Drill-down: the sessions behind one bar (or behind the "outside shop hours" warning), showing the bill
+// time next to the chair-start time so a wrong clock or a bad import is easy to spot.
+function renderHourlyList(box, title, list){
+  const rows = list.slice().sort((a, b) => (b.startTs || 0) - (a.startTs || 0));
+  const at = (ts) => { const d = new Date(ts); return `${dmyShort(todayStr(d))} ${timeStr(d)}`; };
+  const SHOW = 300;
+  box.innerHTML = `
+    <div style="margin-top:12px; border:1px solid rgba(128,128,128,0.35); border-radius:10px; padding:10px 12px;">
+      <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; justify-content:space-between;">
+        <b>${escapeHtml(title)} \u2014 ${rows.length} session${rows.length === 1 ? "" : "s"}</b>
+        <span><button class="btn btn-small btn-outline" id="hpListExcel">Export Excel</button>
+          <button class="btn btn-small btn-outline" id="hpListClose">Close</button></span>
+      </div>
+      <div style="overflow-x:auto; max-height:420px; overflow-y:auto; margin-top:8px;">
+      <table class="data-table">
+        <thead><tr><th>Invoice</th><th>Bill date &amp; time</th><th>Chair started</th><th>Unit</th><th>Package</th><th>Staff</th><th>Amount</th></tr></thead>
+        <tbody>${rows.slice(0, SHOW).map(s => `<tr><td>${escapeHtml(s.invoiceNo || "")}</td><td>${dmyShort(s.date)} ${escapeHtml(s.time || "")}</td><td>${s.startTs ? at(s.startTs) : "\u2014"}</td>
+          <td>${escapeHtml(s.chairName || "")}</td><td>${escapeHtml(s.packageLabel || "")}</td><td>${escapeHtml(s.staff || "")}</td><td>${fmtMoney(s.amount || 0)}</td></tr>`).join("") || `<tr><td colspan="7">No sessions.</td></tr>`}</tbody>
+      </table>
+      </div>
+      ${rows.length > SHOW ? `<div style="font-size:12px; opacity:0.7; margin-top:6px;">Showing the latest ${SHOW}. Export Excel has all ${rows.length}.</div>` : ""}
+    </div>`;
+  box.querySelector("#hpListClose").addEventListener("click", () => { box.innerHTML = ""; });
+  box.querySelector("#hpListExcel").addEventListener("click", () => {
+    const data = rows.map(s => ({ Invoice: s.invoiceNo || "", "Bill date": dmyShort(s.date), "Bill time": s.time || "", "Chair started": s.startTs ? at(s.startTs) : "",
+      "Minutes after bill": s.startTs && s.date && s.time ? Math.round((s.startTs - (() => { const [y, m, d] = s.date.split("-").map(Number); const [hh, mi, ss] = s.time.split(":").map(Number); return new Date(y, m - 1, d, hh, mi, ss || 0).getTime(); })()) / 60000) : "",
+      Unit: s.chairName || "", Package: s.packageLabel || "", Staff: s.staff || "", Amount: s.amount || 0, Status: s.status || "" }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), "Sessions");
+    shareOrDownloadFile(new Blob([XLSX.write(wb, { bookType: "xlsx", type: "array" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "Hourly_Sessions_" + title.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, "") + ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); // phone: Share sheet
+  });
+  if (box.scrollIntoView) box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function drawHourlyChart(box, S, multi, onPick){
+  if (!S.totalSessions) { box.innerHTML = `<p class="panel-help" style="padding:24px 0; text-align:center;">No paid sessions ran in this selection.</p>`; return; }
+  const rows = S.rows, W = (box.clientWidth && box.clientWidth < 700) ? 520 : 1000, H = 280, padL = 12, padR = 60, padT = 14, padB = 40;
+  const max = Math.max(...rows.map(r => r.sessions));
+  const rawStep = Math.max(1, max / 4), mag = Math.pow(10, Math.floor(Math.log10(rawStep))), f = rawStep / mag;
+  const stepV = Math.max(1, (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag);
+  const top = Math.ceil(max / stepV) * stepV || stepV;
+  const slot = (W - padL - padR) / rows.length, barW = Math.max(6, slot * 0.66);
+  const y = (v) => padT + (H - padT - padB) * (1 - v / top);
+  const grid = [];
+  for (let v = 0; v <= top + 1e-9; v += stepV) grid.push(`<line x1="${padL}" x2="${W - padR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="currentColor" stroke-opacity="0.12"/><text x="${W - padR + 8}" y="${(y(v) + 4).toFixed(1)}" font-size="13" fill="currentColor" fill-opacity="0.65">${v}</text>`);
+  const short = (h) => ((h % 12) || 12) + (h < 12 ? "a" : "p");
+  const bars = rows.map((r, i) => {
+    const x = padL + i * slot + (slot - barW) / 2;
+    const color = S.busiest && r.hour === S.busiest.hour ? "#2fb67c" : (S.quietest && r.hour === S.quietest.hour ? "#d9534f" : "var(--copper)");
+    const hgt = r.sessions ? Math.max(2, (H - padT - padB) - (y(r.sessions) - padT)) : 0;
+    return `${r.sessions ? `<rect x="${x.toFixed(1)}" y="${y(r.sessions).toFixed(1)}" width="${barW.toFixed(1)}" height="${hgt.toFixed(1)}" rx="3" fill="${color}"/>` : ""}
+      <text x="${(padL + i * slot + slot / 2).toFixed(1)}" y="${H - 16}" font-size="13" text-anchor="middle" fill="currentColor" fill-opacity="0.7">${short(r.hour)}</text>
+      <rect class="hp-hit" data-i="${i}" x="${(padL + i * slot).toFixed(1)}" y="${padT}" width="${slot.toFixed(1)}" height="${H - padT - padB + 24}" fill="transparent"/>`;
+  }).join("");
+  box.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; display:block; color:var(--ink);" role="img" aria-label="Sessions by hour">
+      ${grid.join("")}${bars}
+    </svg>
+    <div id="hpTip" style="position:absolute; display:none; pointer-events:none; background:var(--cream); border:1px solid var(--copper); border-radius:8px; padding:6px 10px; font-size:13px; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,0.3);"></div>`;
+  const svg = box.querySelector("svg"), tip = box.querySelector("#hpTip");
+  const show = (i) => {
+    const r = rows[i];
+    tip.innerHTML = `<div style="opacity:0.75;">${escapeHtml(r.label)}</div>
+      <div><b style="font-size:15px;">${r.sessions}</b> session${r.sessions === 1 ? "" : "s"} \u00b7 <b>${fmtMoney(r.revenue)}</b></div>
+      <div style="opacity:0.7; font-size:12px;">${S.totalSessions ? (r.share.toFixed(1) + "% of the selection") : ""}${multi ? ` \u00b7 avg ${r.avgPerDay.toFixed(1)}/day` : ""}</div>`;
+    tip.style.display = "";
+    const scale = svg.getBoundingClientRect().width / W, cx = (padL + i * slot + slot / 2) * scale;
+    let left = cx + 10; if (left + tip.offsetWidth > box.clientWidth) left = cx - tip.offsetWidth - 10;
+    tip.style.left = Math.max(0, left) + "px"; tip.style.top = Math.max(0, y(r.sessions) * scale - 40) + "px";
+  };
+  box.querySelectorAll(".hp-hit").forEach(h => { h.addEventListener("mouseenter", () => show(Number(h.dataset.i))); h.addEventListener("click", () => { show(Number(h.dataset.i)); if (onPick) onPick(Number(h.dataset.i)); }); });
+  svg.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+}
+
+function hourlyExportSummary(S, multi){
+  const line = (lbl, r) => r ? `${lbl}: ${r.label} - ${r.sessions} sessions (${r.share.toFixed(1)}%)${multi ? `, avg ${r.avgPerDay.toFixed(1)}/day` : ""}, Rs.${Math.round(r.revenue).toLocaleString("en-IN")}` : `${lbl}: -`;
+  return [
+    `Selection: ${S.label}`,
+    `Total: ${S.totalSessions} sessions, Rs.${Math.round(S.totalRevenue).toLocaleString("en-IN")}${multi ? ` over ${S.tradingDays} trading days` : ""}`,
+    line("Busiest hour", S.busiest),
+    line("Quietest hour (with customers)", S.quietest),
+    S.bestRev ? `Best revenue hour: ${S.bestRev.label} - Rs.${Math.round(S.bestRev.revenue).toLocaleString("en-IN")}` : "Best revenue hour: -",
+    `Hours with no customers: ${S.totalSessions ? (S.zeroHours.length ? S.zeroHours.map(r => r.label).join(", ") : "none") : "-"}`,
+    ...(S.outside.length ? [`Not counted: ${S.outside.length} session(s) with a chair-start time outside shop hours (9 AM - 11 PM)`] : []),
+    "Counted: paid sessions that actually ran, by the hour the chair started."
+  ];
+}
+function hourlyFileName(S){ return "Hourly_Performance_" + S.label.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, ""); }
+function exportHourlyExcel(S, multi){
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet([{ A: `${liveConfig.businessName || "RRG Lounge"} \u2014 Hourly Performance` }].concat(hourlyExportSummary(S, multi).map(t => ({ A: t }))).concat([{}]), { skipHeader: true });
+  const rows = S.rows.map(r => { const o = { Hour: r.label, Sessions: r.sessions, "Share %": Math.round(r.share * 10) / 10 }; if (multi) o["Avg per day"] = Math.round(r.avgPerDay * 10) / 10; o.Revenue = Math.round(r.revenue); return o; });
+  const tot = { Hour: "Total", Sessions: S.totalSessions, "Share %": S.totalSessions ? 100 : 0 }; if (multi) tot["Avg per day"] = S.tradingDays ? Math.round(S.totalSessions / S.tradingDays * 10) / 10 : 0; tot.Revenue = Math.round(S.totalRevenue);
+  XLSX.utils.sheet_add_json(ws, rows.concat([tot]), { origin: -1 });
+  XLSX.utils.book_append_sheet(wb, ws, "Hourly");
+  shareOrDownloadFile(new Blob([XLSX.write(wb, { bookType: "xlsx", type: "array" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), hourlyFileName(S) + ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); // phone: Share sheet
+}
+function exportHourlyPDF(S, multi){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4" });
+  doc.setFontSize(15); doc.text(`${pdfSafeText(liveConfig.businessName)} \u2014 Hourly Performance`, 14, 15);
+  doc.setFontSize(9.5);
+  let yy = 22; hourlyExportSummary(S, multi).forEach(t => { doc.text(pdfSafeText(t), 14, yy); yy += 5; });
+  const head = ["Hour", "Sessions", "Share"].concat(multi ? ["Avg per day"] : []).concat(["Revenue"]);
+  const body = S.rows.map(r => [r.label, String(r.sessions), S.totalSessions ? r.share.toFixed(1) + "%" : "-"].concat(multi ? [r.avgPerDay.toFixed(1)] : []).concat([fmtMoneyPDF(r.revenue)]))
+    .concat([["Total", String(S.totalSessions), S.totalSessions ? "100%" : "-"].concat(multi ? [S.tradingDays ? (S.totalSessions / S.tradingDays).toFixed(1) : "-"] : []).concat([fmtMoneyPDF(S.totalRevenue)])]);
+  doc.autoTable({ startY: yy + 2, head: [head], body, styles: { fontSize: 9 }, headStyles: { fillColor: [30,30,30], textColor: [230,190,80] } });
+  shareOrDownloadFile(doc.output("blob"), hourlyFileName(S) + ".pdf", "application/pdf"); // phone: Share sheet
 }
 
 /* ========================= BOOK TAB (staff/admin, when mobileBookingEnabled) =========================
