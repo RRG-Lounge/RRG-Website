@@ -7,6 +7,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -145,7 +146,7 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [], adminPhoneTools: {} };
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [], adminPhoneTools: {}, shopHours: null, changeBoxEnabled: true };
 let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [], queueRows = [];
 let unsubs = [];
 let currentTab = "operations";
@@ -607,6 +608,7 @@ function computeVisibleTabs(){
     if (currentUserRole === "admin" && apt.cashRegister) allTabs.push({ id: "cash", label: "Cash" });
     if (currentUserRole === "admin" && apt.analytics) allTabs.push({ id: "analytics", label: "Analytics" });
     if (hrPhoneShowTab()) allTabs.push({ id: "attendance", label: "Attendance" });
+    if (hrPhoneStaffTab()) allTabs.push({ id: "staff", label: "Staff" });
     allTabs.push({ id: "settings", label: "Settings" });
   }
   // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
@@ -691,7 +693,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {} };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
@@ -808,6 +810,7 @@ function render(){
   if (currentTab === "analytics") { renderAnalyticsTab(); return; }
   if (currentTab === "settings") { renderSettingsTab(); return; }
   if (currentTab === "attendance") { if (!document.getElementById("hrAttRoot")) renderAttendanceTab(); return; } // live sale updates don't wipe a half-typed mark
+  if (currentTab === "staff") { if (!document.getElementById("hrStaffRoot")) renderStaffTab(); return; }
   // Move's dropdown can now appear on Queue OR Operations -- a live update landing while either
   // is open would otherwise yank the DOM out from under an open picker, same risk this guard was
   // originally built to prevent for Queue's "Start on a chair" select.
@@ -2424,6 +2427,7 @@ let cashBoxRecent = [], cashBoxEditing = {};
 async function renderCashBoxPhone(D, T){
   const box = document.getElementById("cashBoxPanel");
   if (!box) return;
+  if (liveConfig.changeBoxEnabled === false) { box.remove(); return; } // Change Box switched off for this shop (dashboard Settings > Shop rules)
   const base = new Date(D.date + "T12:00:00").getTime(), days = [];
   for (let i = 0; i < 15; i++) days.push(todayStrFromDate(new Date(base - i * 86400000))); // this day + the 14 before (enough to find "last night")
   try {
@@ -2498,8 +2502,9 @@ function hrHoliday(cfg, date){ return (cfg.holidays || []).find(h => h.date === 
 // Which shifts this person is expected to work on this date. A roster change for that day always wins.
 function hrExpected(cfg, staff, date, ov){
   const out = (ids, why) => ({ shifts: (ids || []).map(id => hrShift(cfg, id)).filter(s => s && s.active !== false).sort((a, b) => hrMin(a.start) - hrMin(b.start)), why });
-  if (!staff || staff.active === false) return out([], "inactive");
+  if (!staff) return out([], "inactive");
   if (staff.startDate && date < staff.startDate) return out([], "notStarted");
+  if (!hrEmployedOn(staff, date)) return out([], "inactive"); // after leaving (or before rejoining): no shifts; earlier days still show
   if (ov) return ov.mode === "off" ? out([], "rosterOff") : out(ov.shiftIds, "roster");
   const plan = hrPlanFor(cfg, staff, date);
   if (!plan || plan.active === false) return out([], "noPlan");
@@ -2525,6 +2530,7 @@ function hrIntervals(punches){
 }
 // One person, one day: each expected shift with in / out / late / early / status, plus extra work and the bill cross-check
 function hrDayView(cfg, staff, date, ov, punches, marks, nowMs, bills){
+  marks = Object.fromEntries(Object.entries(marks || {}).filter(([k, m]) => m && m.status)); // a cleared mark (status "") = no mark
   const exp = hrExpected(cfg, staff, date, ov);
   const pen = (hrPlanFor(cfg, staff, date) || {}).pen || {};
   const grace = pen.late && pen.late.grace != null && pen.late.grace !== "" ? +pen.late.grace : 15;
@@ -2567,6 +2573,41 @@ function hrMetres(lat1, lng1, lat2, lng2){
   const R = 6371000, r = (x) => x * Math.PI / 180, dLat = r(lat2 - lat1), dLng = r(lng2 - lng1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(dLng / 2) ** 2;
   return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+}
+
+/* ---- Employee records (Part 1b): profile fields, age, employment periods ---- */
+const HR_STATUS = { trial: "Trial", active: "Active", longLeave: "On long leave", resigned: "Resigned", left: "Left", terminated: "Terminated" };
+const HR_GONE = ["resigned", "left", "terminated"];
+const HR_PROFILE_GROUPS = [
+  ["Personal", [["dob", "Date of birth", "date"], ["gender", "Gender", "select", ["", "Male", "Female", "Other"]], ["bloodGroup", "Blood group", "select", ["", "A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]],
+    ["languages", "Languages known"], ["email", "Email ID", "email"], ["education", "Education"]]],
+  ["Contact", [["phone", "Primary contact number", "tel"], ["phone2", "Secondary contact number", "tel"], ["address", "Present address", "textarea"],
+    ["sameAddress", "Permanent address same as present", "check"], ["permAddress", "Permanent address", "textarea"]]],
+  ["Emergency contact", [["emgName", "Contact person name"], ["emgRelation", "Relationship"], ["emgPhone", "Emergency contact number", "tel"]]],
+  ["Job", [["designation", "Designation"], ["startDate", "Date of joining", "date"], ["confirmDate", "Confirmation date (end of trial)", "date"],
+    ["prevJob", "Previous job"], ["refName", "Reference person"], ["refPhone", "Reference phone", "tel"]]],
+  ["Salary payment", [["bankName", "Bank name"], ["bankAcc", "Bank account number"], ["bankIfsc", "IFSC"], ["upiId", "UPI ID"]]],
+  ["Other", [["policeVerified", "Police verification", "select", ["", "Not done", "Applied", "Done"]], ["policeDate", "Police verification date", "date"],
+    ["uniformIssued", "Uniform issued", "check"], ["idCardIssued", "ID card issued", "check"], ["aadhaarLast4", "Aadhaar (last 4 digits only)"], ["pan", "PAN"], ["notes", "Notes", "textarea"]]]
+];
+const HR_DOC_KINDS = { photo: "Photo", aadhaar: "Aadhaar (masked copy)", pan: "PAN card", address: "Address proof", offer: "Offer / appointment letter", other: "Other" };
+function hrAge(dob, onDate){
+  if (!dob) return null; const [y, m, d] = dob.split("-").map(Number), t = onDate ? onDate.split("-").map(Number) : null;
+  const now = t ? { y: t[0], m: t[1], d: t[2] } : (() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() + 1, d: n.getDate() }; })();
+  let a = now.y - y; if (now.m < m || (now.m === m && now.d < d)) a--; return a >= 0 ? a : null;
+}
+function hrStatusOf(s){ return s.status || (s.active === false ? "left" : "active"); }
+// Employed on a date: inside one of the employment periods (joining -> last working day). Older records without
+// periods: active + joined on/before the date (Part 1 behaviour).
+function hrEmployedOn(s, date){
+  const per = s.periods || [];
+  if (per.length) return per.some(p => (!p.from || p.from <= date) && (!p.to || date <= p.to));
+  return s.active !== false;
+}
+function hrProfileFieldList(customFields){
+  const list = []; HR_PROFILE_GROUPS.forEach(([g, fs]) => fs.forEach(f => list.push({ k: f[0], label: f[1], type: f[2] || "text", options: f[3], group: g })));
+  (customFields || []).filter(c => c.active !== false).forEach(c => list.push({ k: "custom." + c.id, label: c.label, type: c.type || "text", group: "More" }));
+  return list;
 }
 
 /* ==================== Attendance tab (phone) ====================
@@ -2675,6 +2716,48 @@ function hrPhoneMarkCtl(staffId, date, shiftId, mark){
   return `<div style="display:flex; gap:4px; margin-top:4px;"><select class="hrMarkSel" data-mk="${k}" style="flex:1;"><option value="">${mark ? "\u2014 clear mark \u2014" : "\u2014 mark \u2014"}</option>${Object.keys(HR_MARKS).map(x => `<option value="${x}" ${mark && mark.status === x ? "selected" : ""}>${HR_MARKS[x]}</option>`).join("")}</select>
     <input type="text" class="hrMarkReason" data-mk="${k}" placeholder="Reason" value="${escapeHtml((mark && mark.reason) || "")}" style="width:90px;"><button class="btn btn-outline btn-small hrMarkSave" data-mk="${k}">Save</button></div>`;
 }
+
+/* ==================== Staff tab (phone, Admin only, view) ====================
+   Profiles + documents to look up on the go. Editing stays on the dashboard (HR -> Staff). */
+let hrPStaffId = null;
+function hrPhoneStaffTab(){ return currentUserRole === "admin" && !!liveConfig.hrPunch && Object.keys(liveConfig.hrPunch).length > 0; }
+async function hrPDocURL(path){ if (!path || typeof firebase.storage !== "function") return null; try { return await firebase.storage().ref(path).getDownloadURL(); } catch (e) { return null; } }
+async function renderStaffTab(){
+  const el = document.getElementById("mainContent");
+  el.innerHTML = `<span id="hrStaffRoot" hidden></span><div class="panel"><div class="panel-title">Staff</div><p class="panel-help">Loading\u2026</p></div>`;
+  let cfg, staff;
+  try { const [c, s] = await Promise.all([fsDb.collection("hrSettings").doc("main").get(), fsDb.collection("hrStaff").get()]);
+    cfg = Object.assign({ plans: [], customFields: [] }, c.exists ? c.data() : {}); staff = s.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.name || "").localeCompare(b.name || "")); }
+  catch (e) { el.innerHTML = `<span id="hrStaffRoot" hidden></span><div class="panel"><p class="panel-help">Couldn't load staff: ${escapeHtml(e.message)}</p></div>`; return; }
+  const s = staff.find(x => x.id === hrPStaffId);
+  if (!s) {
+    const cur = staff.filter(x => !HR_GONE.includes(hrStatusOf(x))), gone = staff.filter(x => HR_GONE.includes(hrStatusOf(x)));
+    const row = (x) => `<div data-hpst="${x.id}" style="padding:10px 0; border-bottom:1px solid var(--line); cursor:pointer;"><b>${escapeHtml(x.name)}</b> <span class="panel-help">${escapeHtml(HR_STATUS[hrStatusOf(x)] || "")}${x.designation ? " \u00b7 " + escapeHtml(x.designation) : ""}${x.phone ? " \u00b7 " + escapeHtml(x.phone) : ""}</span></div>`;
+    el.innerHTML = `<span id="hrStaffRoot" hidden></span><div class="panel"><div class="panel-title">Staff</div>${cur.map(row).join("") || `<p class="panel-help">No staff yet (dashboard: HR \u2192 Staff).</p>`}
+      ${gone.length ? `<div class="panel-help" style="margin-top:12px;">Left / resigned</div>${gone.map(row).join("")}` : ""}</div>`;
+    el.querySelectorAll("[data-hpst]").forEach(d => d.addEventListener("click", () => { hrPStaffId = d.dataset.hpst; renderStaffTab(); }));
+    return;
+  }
+  const st = hrStatusOf(s), age = hrAge(s.dob), fields = hrProfileFieldList(cfg.customFields);
+  const val = (f) => { const v = hrGet2(s, f.k); if (f.type === "check") return v ? "Yes" : "No"; if (v == null || v === "") return ""; return f.type === "date" ? dmyShort(v) + (f.k === "dob" && age != null ? ` (age ${age})` : "") : escapeHtml(String(v)).replace(/\n/g, "<br>"); };
+  const groups = HR_PROFILE_GROUPS.map(([g]) => g).concat(["More"]);
+  const tel = (n) => n ? `<a href="tel:${escapeHtml(n.replace(/[^\d+]/g, ""))}">${escapeHtml(n)}</a>` : "";
+  el.innerHTML = `<span id="hrStaffRoot" hidden></span><div class="panel"><button class="btn btn-outline btn-small" id="hrPSBack">\u2190 All staff</button>
+    <div style="display:flex; gap:12px; align-items:center; margin-top:10px;"><div id="hrPSPhoto" style="width:84px; height:84px; border-radius:10px; overflow:hidden; background:rgba(128,128,128,0.15); display:flex; align-items:center; justify-content:center; font-size:30px; flex:0 0 auto;">\u{1F464}</div>
+    <div><div class="panel-title" style="margin:0;">${escapeHtml(s.name)}</div><div>${escapeHtml(s.designation || s.type || "")} \u00b7 <b style="color:${HR_GONE.includes(st) ? "#d9534f" : "#2e7d32"};">${escapeHtml(HR_STATUS[st] || st)}</b>${age != null ? ` \u00b7 Age ${age}` : ""}</div>
+    <div>${tel(s.phone)}${s.emgPhone ? ` \u00b7 Emergency: ${tel(s.emgPhone)}${s.emgName ? " (" + escapeHtml(s.emgName) + (s.emgRelation ? ", " + escapeHtml(s.emgRelation) : "") + ")" : ""}` : ""}</div></div></div></div>
+    ${groups.map(g => { const rows = fields.filter(f => f.group === g && f.k !== "sameAddress" && !(f.k === "permAddress" && s.sameAddress)).map(f => [f.label, val(f)]).filter(r => r[1] !== "");
+      if (g === "Contact" && s.sameAddress) rows.push(["Permanent address", "Same as present"]);
+      return rows.length ? `<div class="panel"><div class="panel-title">${escapeHtml(g)}</div>${rows.map(r => `<div style="padding:4px 0;"><span class="panel-help">${escapeHtml(r[0])}</span><br>${r[1]}</div>`).join("")}</div>` : ""; }).join("")}
+    <div class="panel"><div class="panel-title">Documents</div>${(s.docs || []).filter(d => !d.archived).map(d => `<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--line);"><span>${escapeHtml(HR_DOC_KINDS[d.kind] || d.kind)}<br><span class="panel-help">${escapeHtml(d.name || "")}</span></span><button class="btn btn-outline btn-small" data-hpdoc="${escapeHtml(d.path)}">Open</button></div>`).join("") || `<p class="panel-help">No documents yet.</p>`}
+    <div id="hrPSMsg" class="panel-help"></div></div>
+    <div class="panel"><div class="panel-title">Employment</div>${(s.periods || []).map(p => `${p.from ? dmyShort(p.from) : "?"} \u2192 ${p.to ? dmyShort(p.to) : "now"}`).join("<br>") || (s.startDate ? dmyShort(s.startDate) + " \u2192 now" : "")}${s.statusReason ? `<p class="panel-help">${escapeHtml(s.statusReason)}</p>` : ""}</div>`;
+  hrPDocURL(s.photoPath).then(u => { const b = document.getElementById("hrPSPhoto"); if (u && b) b.innerHTML = `<img src="${u}" style="width:100%; height:100%; object-fit:cover;" alt="Photo">`; });
+  document.getElementById("hrPSBack").addEventListener("click", () => { hrPStaffId = null; renderStaffTab(); });
+  el.querySelectorAll("[data-hpdoc]").forEach(b => b.addEventListener("click", async () => { const w = window.open("", "_blank"); // opened during the tap, so the iPhone doesn't block it
+    const u = await hrPDocURL(b.dataset.hpdoc); if (u && w) w.location.href = u; else { if (w) w.close(); document.getElementById("hrPSMsg").textContent = "Couldn't open the file."; } }));
+}
+function hrGet2(o, k){ return k.split(".").reduce((a, x) => (a == null ? undefined : a[x]), o); }
 
 async function renderMallShareTab(){
   const el = document.getElementById("mainContent");
@@ -3298,7 +3381,13 @@ async function renderAnalyticsTab(){
    "Quietest hour" is picked only from hours that had at least one customer; zero-customer shop hours
    are listed separately. Shop hours shown: 9 AM - 11 PM, plus any other hour that has sessions. */
 let hourlyState = { period: "day", date: null, month: null, year: null, dayType: "all" };
-const SHOP_FIRST_HOUR = 9, SHOP_LAST_HOUR = 22; // shop hours 9 AM - 11 PM; anything outside is listed as a warning, never charted
+// Shop hours come from Settings > Shop rules (liveConfig.shopHours = { from, to }, "to" = closing hour, 24 = midnight); default 9 AM - 11 PM.
+function shopHourRange(){
+  const c = (liveConfig && liveConfig.shopHours) || {};
+  const f = Number.isInteger(c.from) ? c.from : 9, t = Number.isInteger(c.to) ? c.to : 23;
+  return (f >= 0 && t <= 24 && f < t) ? { first: f, last: t - 1 } : { first: 9, last: 22 };
+}
+function shopHoursText(){ const r = shopHourRange(), to12 = (n) => ((n % 12) || 12) + (n % 24 < 12 ? " AM" : " PM"); return `${to12(r.first)} - ${to12(r.last + 1)}`; }
 
 function hourSlotLabel(h){
   const to12 = (n) => ((n % 12) || 12) + (n < 12 ? " AM" : " PM");
@@ -3316,6 +3405,7 @@ function hourlyPeriodLabel(){
 }
 function hourlyStats(){
   const st = hourlyState;
+  const { first: SHOP_FIRST_HOUR, last: SHOP_LAST_HOUR } = shopHourRange();
   const isWeekend = (dateStr) => { const [y, m, d] = dateStr.split("-").map(Number); const wd = new Date(y, m - 1, d).getDay(); return wd === 0 || wd === 6; };
   const inPeriod = (s) => {
     const d = s.date || "";
@@ -3403,7 +3493,7 @@ function initHourlyPerformancePanel(){
     </div>
     </div>
     ${S.outside.length ? `<div style="margin:0 0 10px; padding:8px 12px; border:1px solid #d9534f; border-radius:8px; font-size:13px;">
-      \u26A0\uFE0F <b>${S.outside.length} session${S.outside.length === 1 ? " has" : "s have"} a chair-start time outside shop hours</b> (before 9 AM or after 11 PM), so ${S.outside.length === 1 ? "it isn't" : "they aren't"} in the chart.
+      \u26A0\uFE0F <b>${S.outside.length} session${S.outside.length === 1 ? " has" : "s have"} a chair-start time outside shop hours</b> (outside ${shopHoursText()}), so ${S.outside.length === 1 ? "it isn't" : "they aren't"} in the chart.
       <button class="btn btn-small btn-outline" id="hpOutsideBtn" style="margin-left:6px;">View list</button></div>` : ""}
     <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
       ${card("\u{1F525} Busiest hour", S.busiest ? S.busiest.label : "\u2014", hourSub(S.busiest), "#2fb67c")}
@@ -3522,7 +3612,7 @@ function hourlyExportSummary(S, multi){
     line("Quietest hour (with customers)", S.quietest),
     S.bestRev ? `Best revenue hour: ${S.bestRev.label} - Rs.${Math.round(S.bestRev.revenue).toLocaleString("en-IN")}` : "Best revenue hour: -",
     `Hours with no customers: ${S.totalSessions ? (S.zeroHours.length ? S.zeroHours.map(r => r.label).join(", ") : "none") : "-"}`,
-    ...(S.outside.length ? [`Not counted: ${S.outside.length} session(s) with a chair-start time outside shop hours (9 AM - 11 PM)`] : []),
+    ...(S.outside.length ? [`Not counted: ${S.outside.length} session(s) with a chair-start time outside shop hours (${shopHoursText()})`] : []),
     "Counted: paid sessions that actually ran, by the hour the chair started."
   ];
 }
