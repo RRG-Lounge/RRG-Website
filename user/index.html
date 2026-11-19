@@ -578,6 +578,7 @@ const PHONE_FEATURES = [
   { key: "hourly",            label: "Analytics: Hourly Performance",                             levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
   { key: "attendance",        label: "Attendance tab (own Clock In / Out; Admin: day view + marks)", levels: ["hidden", "show"],      roles: ["staff", "admin"] },
   { key: "staffProfiles",     label: "Staff tab (staff profiles + documents)",                    levels: ["hidden", "show"],         roles: ["admin"] },
+  { key: "usbPrint",          label: "USB printer: print receipts from this phone (OTG cable)",   levels: ["hidden", "show"],         roles: ["staff", "admin"] },
   { key: "phoneSettings",     label: "Settings tab (Mobile Booking on/off)",                      levels: ["hidden", "show"],         roles: ["admin"] }
 ];
 const PHONE_LEVEL_LABEL = { hidden: "Hidden", show: "Show", view: "View only", edit: "View + Edit" };
@@ -590,11 +591,11 @@ function phoneAccessBuiltIn(kind, key, cfg, mallVisible){
     if (key === "hourly") return (mallVisible && mallVisible("analytics.hourlyPerformance", true)) ? "show" : "hidden";
     return "hidden";
   }
-  if (kind === "staff") return (key === "queue" || key === "book" || key === "attendance") ? "show" : "hidden"; // JCT: own clock-in, as before
+  if (kind === "staff") return (key === "queue" || key === "book" || key === "attendance" || key === "usbPrint") ? "show" : "hidden"; // JCT: own clock-in + USB printing (still needs the switch on)
   if (["queue", "book", "operations", "receipts"].includes(key)) return "show";
   if (kind === "admin_limited") return "hidden";
   switch (key) {
-    case "phoneSettings": case "attendance": case "staffProfiles": return "show"; // JCT: HR tabs still need HR set up (see computeVisibleTabs)
+    case "phoneSettings": case "attendance": case "staffProfiles": case "usbPrint": return "show"; // JCT: HR tabs still need HR set up (see computeVisibleTabs)
     case "receiptsZip": return apt.receiptsZip ? "show" : "hidden";
     case "dailySummary": return apt.dailySummary ? "show" : "hidden";
     case "revenueShare": return apt.revenueShare ? "show" : "hidden";
@@ -791,7 +792,9 @@ function refreshTabBar(){
       // without switching away, the more that snapshot drifts from Operations' always-live
       // figures. Forcing a fresh reload on every switch INTO either tab keeps them honest without
       // re-fetching on every unrelated update while just sitting on the tab.
-      if (currentTab === "analytics" || currentTab === "mdshare") mallShareLoaded = false;
+      // Read less (20 Nov 2026): reuse the history already downloaded unless it's older than the Admin's setting
+      // (default 30 min); the "Refresh" button on those tabs fetches fresh figures any time.
+      if ((currentTab === "analytics" || currentTab === "mdshare") && Date.now() - mallShareLoadedAt > (liveConfig.phoneHistoryMin || 30) * 60000) mallShareLoaded = false;
       render();
     });
   });
@@ -850,7 +853,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false, phoneAccess: config.phoneAccess || {} };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false, phoneAccess: config.phoneAccess || {}, phoneHistoryMin: config.phoneHistoryMin || 30, tagline: config.tagline || "", businessAddress: config.businessAddress || "", businessPhone: config.businessPhone || "", printerWidthMM: config.printerWidthMM || 80, phonePrintEnabled: config.phonePrintEnabled, phonePrintAuto: config.phonePrintAuto !== false };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
@@ -943,9 +946,20 @@ async function renderSettingsTab(){
         <input type="checkbox" id="mobileBookingToggle" ${liveConfig.mobileBookingEnabled ? "checked" : ""}>
         Enable the Book tab for staff (and this view)
       </label>
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:1rem; margin-top:10px;">
+        <input type="checkbox" id="phonePrintToggle" ${prEnabled() ? "checked" : ""}>
+        Print receipts from phones (USB printer + OTG cable)
+      </label>
+      <p class="panel-help">Backup if the shop laptop has a problem: unplug the printer's USB from the laptop, plug it into an Android phone with an OTG cable, then "Connect printer" on Book or Receipts. On by default when the Book tab is on.</p>
       <p class="panel-help">Same setting as the main dashboard's own "Enable the Book tab" checkbox \u2014 changing it here takes effect everywhere immediately, on every phone, no reload needed.</p>
     </div>
   `;
+  document.getElementById("phonePrintToggle").addEventListener("change", async (e) => {
+    const checked = e.target.checked; e.target.disabled = true;
+    try { await fsDb.collection("meta").doc("config").set({ value: { phonePrintEnabled: checked } }, { merge: true }); }
+    catch (err) { alert("Couldn't save: " + err.message); e.target.checked = !checked; }
+    e.target.disabled = false;
+  });
   document.getElementById("mobileBookingToggle").addEventListener("change", async (e) => {
     const checked = e.target.checked;
     e.target.disabled = true;
@@ -962,10 +976,10 @@ async function renderSettingsTab(){
 function render(){
   renderTimesUpTray();
   if (currentTab === "noaccess") { const el = document.getElementById("mainContent"); if (el) el.innerHTML = `<p class="panel-help">Nothing is switched on for your login yet. Please ask the Admin.</p>`; return; }
-  if (currentTab === "receipts") { renderReceiptsTab(); return; }
-  if (currentTab === "mdshare") { renderMallShareTab(); return; }
+  if (currentTab === "receipts") { Promise.resolve(renderReceiptsTab()).then(() => prReconnect()).then(prMountBar); return; }
+  if (currentTab === "mdshare") { Promise.resolve(renderMallShareTab()).then(addHistoryRefreshBar); return; }
   if (currentTab === "cash") { renderCashTab(); return; }
-  if (currentTab === "analytics") { renderAnalyticsTab(); return; }
+  if (currentTab === "analytics") { Promise.resolve(renderAnalyticsTab()).then(addHistoryRefreshBar); return; }
   if (currentTab === "settings") { renderSettingsTab(); return; }
   if (currentTab === "attendance") { if (!document.getElementById("hrAttRoot")) renderAttendanceTab(); return; } // live sale updates don't wipe a half-typed mark
   if (currentTab === "staff") { if (!document.getElementById("hrStaffRoot")) renderStaffTab(); return; }
@@ -974,7 +988,7 @@ function render(){
   // originally built to prevent for Queue's "Start on a chair" select.
   if (queueInteractionActive) { queueRerenderPending = true; return; }
   if (currentTab === "queue") { renderQueueTab(); return; }
-  if (currentTab === "book") { renderBookTab(); return; }
+  if (currentTab === "book") { renderBookTab(); prReconnect().then(prMountBar); return; }
   renderOperationsTab();
 }
 
@@ -1201,6 +1215,90 @@ function receiptsFilterLabel(){
 
 // Simple, correct, desktop-friendly receipt (A4) rather than an exact 80mm thermal-roll replica --
 // same figures as the shop's own thermal bill, just laid out for a screen/printer here.
+/* ==================== Phone USB printing (OTG backup) -- 21 Nov 2026 ====================
+   When the shop laptop has a problem: unplug the printer's USB from the laptop, plug it into an Android phone with
+   an OTG cable, tap "Connect printer" once (Chrome remembers it), and receipts print from the phone -- after a
+   booking (automatic, a setting) and from Receipts > Print. Same receipt as the laptop's (its ESC/POS layout, Rs.,
+   tokens listed at the bottom). Printer code = the 11 Nov printtest.html that printed on the shop's Rongta.
+   Settings: on/off (default: on whenever phone booking is on), auto-print after booking, paper width (the dashboard's
+   printer width setting), and who may use it (Access tab > Phone page > "USB printer"). Android + Chrome only. */
+let prDev = null, prEp = null;
+function prEnabled(){ const v = liveConfig.phonePrintEnabled; return v === true || (v !== false && !!liveConfig.mobileBookingEnabled); }
+function prAllowed(){ return prEnabled() && phoneAccess("usbPrint") !== "hidden"; } // Access tab > Phone page > USB printer
+function prCols(){ return (liveConfig.printerWidthMM || 80) >= 80 ? 48 : 32; }
+const PR_ESC = 0x1B, PR_GS = 0x1D;
+function prText(s){ return Array.from(String(s == null ? "" : s).replace(/\u20B9/g, "Rs.").replace(/[\u2013\u2014]/g, "-")).map(c => { const n = c.charCodeAt(0); return n < 128 ? n : 63; }); }
+function prLine(s){ return [...prText(s), 0x0A]; }
+function prTwo(l, r, cols){ l = String(l); r = String(r); return prLine(l + " ".repeat(Math.max(1, cols - l.length - r.length)) + r); }
+function prMoney(n){ return "Rs." + Math.round(n || 0).toLocaleString("en-IN"); }
+// The laptop's buildReceiptEscpos(), with CONFIG -> liveConfig
+function prReceiptBytes(sale){
+  const cols = prCols(), C = liveConfig;
+  const b = [PR_ESC, 0x40, PR_ESC, 0x61, 1, PR_ESC, 0x45, 1, ...prLine(C.businessName || ""), PR_ESC, 0x45, 0];
+  if (C.tagline) b.push(...prLine(C.tagline));
+  if (C.businessAddress) b.push(...prLine(C.businessAddress));
+  if (C.businessPhone) b.push(...prLine("Ph: " + C.businessPhone));
+  b.push(PR_ESC, 0x61, 0, ...prLine("-".repeat(cols)));
+  b.push(...prTwo("Inv No", sale.invoiceNo || "-", cols));
+  b.push(...prTwo("Date", dmy(new Date(sale.startTs)) + " " + sale.time, cols));
+  b.push(...prTwo("Staff", sale.staff || "", cols));
+  b.push(...prTwo("Customer", sale.customerName || "", cols));
+  b.push(...prLine("-".repeat(cols)));
+  (sale.items || []).forEach(it => b.push(...prTwo(`${it.name} x${it.qty}`, prMoney(it.subtotal), cols)));
+  b.push(...prLine("-".repeat(cols)));
+  const gst = sale.gst || { enabled: false };
+  if (gst.enabled && typeof gstBreakup === "function") {
+    const g = gstBreakup(sale.total, gst.rate);
+    b.push(...prTwo("Taxable Value", prMoney(g.taxable), cols), ...prTwo(`CGST @ ${(gst.rate / 2).toFixed(1)}%`, prMoney(g.cgst), cols), ...prTwo(`SGST @ ${(gst.rate / 2).toFixed(1)}%`, prMoney(g.sgst), cols));
+    if (gst.gstin) b.push(...prTwo("GSTIN", gst.gstin, cols));
+    b.push(...prLine("-".repeat(cols)));
+  }
+  if ((sale.cardSurcharge || 0) > 0) { b.push(...prTwo("Subtotal", prMoney(sale.total), cols), ...prTwo("Card Surcharge" + (sale.cardSurchargePct ? ` (${sale.cardSurchargePct}%)` : ""), prMoney(sale.cardSurcharge), cols)); }
+  b.push(PR_ESC, 0x45, 1, ...prTwo("TOTAL", prMoney(sale.total + (sale.cardSurcharge || 0)), cols), PR_ESC, 0x45, 0);
+  b.push(...prTwo("Payment", sale.methodDisplay || sale.method || "", cols));
+  b.push(...prLine("-".repeat(cols)), PR_ESC, 0x61, 1, ...prLine("Thank you! Visit again."));
+  b.push(0x0A, 0x0A, 0x0A, 0x0A, PR_GS, 0x56, 0x42, 0x00); // feed + cut (as printtest.html)
+  return b;
+}
+async function prOpen(d){
+  await d.open();
+  if (d.configuration === null) await d.selectConfiguration(1);
+  let iface = null, out = null;
+  for (const i of d.configuration.interfaces) { for (const alt of i.alternates) { const e = alt.endpoints.find(x => x.direction === "out"); if (e) { iface = i.interfaceNumber; out = e.endpointNumber; break; } } if (iface !== null) break; }
+  if (iface === null) throw new Error("This USB device isn't a printer (no output found).");
+  await d.claimInterface(iface);
+  prDev = d; prEp = out;
+}
+async function prReconnect(){ if (prDev || !navigator.usb) return; try { const ds = await navigator.usb.getDevices(); for (const d of ds) { try { await prOpen(d); return; } catch (e) {} } } catch (e) {} }
+async function prConnect(){
+  if (!navigator.usb) { alert("USB printing needs Chrome on an Android phone."); return; }
+  try { const d = await navigator.usb.requestDevice({ filters: [] }); await prOpen(d); }
+  catch (e) { if (e && e.name === "NotFoundError") return; alert(/claim|Security/i.test((e && (e.name + e.message)) || "") ? "Android or another app is holding the printer. Unplug and replug it, tap Cancel on any 'Open with' popup, then try again." : "Couldn't connect the printer: " + (e && e.message)); }
+  prMountBar();
+}
+if (navigator.usb) navigator.usb.addEventListener("disconnect", (e) => { if (e.device === prDev) { prDev = null; prMountBar(); } });
+async function prSend(bytes){ if (!prDev) await prReconnect(); if (!prDev) throw new Error("USB printer not connected"); await prDev.transferOut(prEp, new Uint8Array(bytes)); }
+// Receipts > Print: straight to the USB printer when it's allowed and connected; otherwise the phone's print menu (as before)
+async function phonePrintSale(sale){
+  if (prAllowed() && navigator.usb) {
+    if (!prDev) await prReconnect();
+    if (prDev) { try { await prSend(prReceiptBytes(sale)); return "usb"; } catch (e) { alert("Couldn't print: " + e.message); return "none"; } }
+  }
+  printReceiptSimple(sale); return "dialog";
+}
+// The printer line on Book and Receipts (only when this person may use it)
+function prMountBar(){
+  const el = document.getElementById("mainContent"); const old = document.getElementById("prBar");
+  if (old) old.remove();
+  if (!el || !prAllowed() || !(currentTab === "book" || currentTab === "receipts")) return;
+  const bar = document.createElement("div"); bar.id = "prBar";
+  bar.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap;";
+  if (!navigator.usb) bar.innerHTML = `<span class="panel-help">\u{1F5A8} USB printer: needs Chrome on an Android phone.</span>`;
+  else bar.innerHTML = `<span class="panel-help">\u{1F5A8} USB printer: <b>${prDev ? escapeHtml(prDev.productName || "connected") : "not connected"}</b></span>${prDev ? "" : `<button class="btn btn-outline btn-small" id="prConnectBtn">Connect printer</button>`}`;
+  el.insertBefore(bar, el.firstChild);
+  const btn = document.getElementById("prConnectBtn"); if (btn) btn.addEventListener("click", prConnect);
+}
+
 function printReceiptSimple(sale){
   const w = window.open("", "_blank", "width=480,height=700");
   if (!w) { alert("Please allow pop-ups to print."); return; }
@@ -1411,7 +1509,7 @@ function renderReceiptsTable(){
 
   tableEl.querySelectorAll(".r-print-btn").forEach(b => b.addEventListener("click", () => withBusyButton(b, async () => {
     const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
-    if (inv) printReceiptSimple(invoiceToSaleObject(inv));
+    if (inv) await phonePrintSale(invoiceToSaleObject(inv)); // USB printer when connected + allowed, else the print menu
   })));
   tableEl.querySelectorAll(".r-edit-btn").forEach(b => b.addEventListener("click", () => openReceiptEditor(b.dataset.invoice)));
   tableEl.querySelectorAll(".r-pdf-btn").forEach(b => b.addEventListener("click", () => withBusyButton(b, async () => {
@@ -1435,8 +1533,18 @@ function dmyShort(dateStr){
 }
 
 let mallShareSessions = [], mallShareAdjustments = [], mallShareSplits = [], mallShareSettlements = [];
-let mallShareLoaded = false;
+let mallShareLoaded = false, mallShareLoadedAt = 0; // Read less: history kept for a while (Settings > Data loading)
 
+function addHistoryRefreshBar(){
+  const el = document.getElementById("mainContent");
+  if (!el || !mallShareLoadedAt || document.getElementById("historyRefreshBar")) return;
+  const t = new Date(mallShareLoadedAt), hh = t.getHours(), mm = String(t.getMinutes()).padStart(2, "0");
+  const bar = document.createElement("div"); bar.id = "historyRefreshBar";
+  bar.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;";
+  bar.innerHTML = `<span class="panel-help">Figures as of ${((hh + 11) % 12) + 1}:${mm} ${hh >= 12 ? "pm" : "am"}</span><button class="btn btn-outline btn-small" id="historyRefreshBtn">\u21bb Refresh</button>`;
+  el.insertBefore(bar, el.firstChild);
+  document.getElementById("historyRefreshBtn").addEventListener("click", () => { mallShareLoaded = false; render(); });
+}
 async function loadMallShareData(){
   const [sessSnap, adjSnap, splitSnap, settleSnap] = await Promise.all([
     fsDb.collection("sessions").get(),
@@ -1448,7 +1556,7 @@ async function loadMallShareData(){
   mallShareAdjustments = adjSnap.docs.map(d => d.data());
   mallShareSplits = splitSnap.docs.map(d => d.data());
   mallShareSettlements = settleSnap.docs.map(d => d.data());
-  mallShareLoaded = true;
+  mallShareLoaded = true; mallShareLoadedAt = Date.now();
 }
 function msAdjustmentFor(invoiceNo){ return mallShareAdjustments.find(a => a.invoiceNo === invoiceNo) || null; }
 function msSplitFor(invoiceNo){ return mallShareSplits.find(p => p.invoiceNo === invoiceNo) || null; }
@@ -4036,11 +4144,21 @@ async function checkoutMobile(){
       }
     }
 
-    alert(`Booked \u2014 Invoice ${invoiceNo}. Assign it to a chair from the Queue tab once ready.`);
+    // Phone USB printing (21 Nov 2026): print this bill's receipt straight away when allowed + switched on
+    let printNote = "";
+    if (prAllowed() && liveConfig.phonePrintAuto !== false && navigator.usb) {
+      try {
+        const recs = itemPlans.map(pl => buildRecordsFor(pl, invoiceNo).session);
+        const r0 = recs[0] || {};
+        const sale = invoiceToSaleObject({ invoiceNo, date: r0.date, time: r0.time, startTs: now.getTime(), staff: r0.staff, method: r0.method, gst: r0.gst, customerName: r0.customerName || null, sessions: recs });
+        await prSend(prReceiptBytes(sale)); printNote = " Receipt printed.";
+      } catch (e) { printNote = prDev ? ` Receipt NOT printed (${e.message}) \u2014 print it from Receipts.` : " Receipt not printed: connect the USB printer, then print it from Receipts."; }
+    }
+    alert(`Booked \u2014 Invoice ${invoiceNo}.${printNote} Assign it to a chair from the Queue tab once ready.`);
     cart = [];
     cartCustomerName = ""; cartCustomerPhone = "";
     cartPayment = liveConfig.defaultPaymentMethod || "UPI";
-    renderBookTab();
+    renderBookTab(); prMountBar();
   } catch (e) {
     alert("Something went wrong: " + e.message + "\n\nCheck Receipts on the main dashboard before trying again, to avoid booking twice.");
   } finally {
