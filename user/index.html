@@ -146,7 +146,7 @@ const fbAuth = firebase.auth();
 const fsDb = firebase.firestore();
 
 const CASH_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1];
-let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [], adminPhoneTools: {}, shopHours: null, changeBoxEnabled: true };
+let liveConfig = { chairOrder: [], disabledUnits: [], unitTypes: {}, staff: [], businessName: "RRG Lounge", mdSharePercent: 30, gstEnabled: false, gstRate: 18, mdName: "", packages: {}, paymentMethods: [], defaultPaymentMethod: "UPI", invoicePrefix: "RRG", gstin: "", mobileBookingEnabled: false, timesUpAlertRules: [], adminPhoneTools: {}, shopHours: null, changeBoxEnabled: true, phoneAccess: {} };
 let sessionsToday = [], paymentSplitsToday = [], adjustmentsToday = [], queueRows = [];
 let unsubs = [];
 let currentTab = "operations";
@@ -556,6 +556,175 @@ function buildLogin(errorMsg){
 }
 
 let currentUserRole = null;
+/* ===================== PHONE PAGE ACCESS (shared list -- identical in the dashboard and the phone page) =====================
+   Every phone-page feature, the choices it offers and which roles it can be given to (a role is never offered something
+   the database rules would refuse it). Settings live in meta/config.value.phoneAccess:
+     { "<uid>": { feature: level }, "role:staff": {...}, "role:admin_limited": {...}, "role:admin_full": {...}, "role:mall_admin": {...} }
+   A person's own choice wins, then their role's default, then the built-in default (= how the page worked before). */
+const PHONE_FEATURES = [
+  { key: "queue",             label: "Queue tab (assign chairs)",                                 levels: ["hidden", "show"],         roles: ["staff", "admin"] },
+  { key: "book",              label: "Book tab (also needs Mobile Booking switched on)",          levels: ["hidden", "show"],         roles: ["staff", "admin"] },
+  { key: "operations",        label: "Operations tab",                                            levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
+  { key: "receipts",          label: "Receipts tab (list, Print, PDF)",                           levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
+  { key: "receiptsZip",       label: "Receipts: ZIP of the list",                                 levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
+  { key: "receiptsEdit",      label: "Receipts: change payment / Adjust a bill (past days)",      levels: ["hidden", "edit"],         roles: ["staff", "admin"] },
+  { key: "receiptsEditToday", label: "Receipts: also allow changing TODAY's bills",               levels: ["hidden", "edit"],         roles: ["staff", "admin"] },
+  { key: "mdshare",           label: "Mall Share tab",                                            levels: ["hidden", "show"],         roles: ["admin", "mall_admin"] },
+  { key: "dailySummary",      label: "Mall Share: Daily Performance Summary (copy / share)",      levels: ["hidden", "show"],         roles: ["admin"] },
+  { key: "revenueShare",      label: "Mall Share: Revenue Share PDF / Excel + Settlement Report", levels: ["hidden", "show"],         roles: ["admin"] },
+  { key: "cash",              label: "Cash tab (Cash Register + Change Box)",                     levels: ["hidden", "view", "edit"], roles: ["staff", "admin"] },
+  { key: "cashOwner",         label: "Cash: owner Taken out / Put in",                            levels: ["hidden", "edit"],         roles: ["admin"] },
+  { key: "analytics",         label: "Analytics tab",                                             levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
+  { key: "hourly",            label: "Analytics: Hourly Performance",                             levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
+  { key: "attendance",        label: "Attendance tab (own Clock In / Out; Admin: day view + marks)", levels: ["hidden", "show"],      roles: ["staff", "admin"] },
+  { key: "staffProfiles",     label: "Staff tab (staff profiles + documents)",                    levels: ["hidden", "show"],         roles: ["admin"] },
+  { key: "phoneSettings",     label: "Settings tab (Mobile Booking on/off)",                      levels: ["hidden", "show"],         roles: ["admin"] }
+];
+const PHONE_LEVEL_LABEL = { hidden: "Hidden", show: "Show", view: "View only", edit: "View + Edit" };
+// Built-in defaults = exactly how the phone page behaved before the Access screen. kind: staff | admin_full | admin_limited | mall_admin
+function phoneAccessBuiltIn(kind, key, cfg, mallVisible){
+  const apt = (cfg && cfg.adminPhoneTools) || {};
+  if (kind === "mall_admin") {
+    const tabPath = { operations: "operations.enabled", receipts: "receipts.enabled", mdshare: "mdshare.enabled", analytics: "analytics.enabled" }[key];
+    if (tabPath) return mallVisible ? (mallVisible(tabPath, false) ? "show" : "hidden") : "show";
+    if (key === "hourly") return (mallVisible && mallVisible("analytics.hourlyPerformance", true)) ? "show" : "hidden";
+    return "hidden";
+  }
+  if (kind === "staff") return (key === "queue" || key === "book" || key === "attendance") ? "show" : "hidden"; // JCT: own clock-in, as before
+  if (["queue", "book", "operations", "receipts"].includes(key)) return "show";
+  if (kind === "admin_limited") return "hidden";
+  switch (key) {
+    case "phoneSettings": case "attendance": case "staffProfiles": return "show"; // JCT: HR tabs still need HR set up (see computeVisibleTabs)
+    case "receiptsZip": return apt.receiptsZip ? "show" : "hidden";
+    case "dailySummary": return apt.dailySummary ? "show" : "hidden";
+    case "revenueShare": return apt.revenueShare ? "show" : "hidden";
+    case "mdshare": return (apt.dailySummary || apt.revenueShare) ? "show" : "hidden";
+    case "cash": case "cashOwner": return apt.cashRegister ? "edit" : "hidden";
+    case "analytics": case "hourly": return apt.analytics ? "show" : "hidden";
+    default: return "hidden";
+  }
+}
+function phoneAccessResolve(cfg, uid, kind, key, mallVisible){
+  const A = (cfg && cfg.phoneAccess) || {};
+  const f = PHONE_FEATURES.find(x => x.key === key);
+  const roleOf = kind === "admin_full" || kind === "admin_limited" ? "admin" : kind;
+  if (!f || !f.roles.includes(roleOf)) return "hidden";
+  const pick = (o) => (o && typeof o[key] === "string" && f.levels.includes(o[key])) ? o[key] : null;
+  return pick(A[uid]) || pick(A["role:" + kind]) || phoneAccessBuiltIn(kind, key, cfg, mallVisible);
+}
+
+/* ---------------------- Access on the phone page (set in the dashboard's Access tab) ---------------------- */
+let currentAdminLevel = null; // "master" | "limited" for Admin logins
+async function loadPhoneAdminLevel(){
+  currentAdminLevel = null;
+  if (currentUserRole !== "admin" || !fbAuth.currentUser) return;
+  try { const d = await fsDb.collection("users").doc(fbAuth.currentUser.uid).get(); currentAdminLevel = (d.exists && d.data().adminLevel === "limited") ? "limited" : "master"; }
+  catch (e) { currentAdminLevel = "master"; }
+}
+function phoneKind(){ return currentUserRole === "admin" ? (currentAdminLevel === "limited" ? "admin_limited" : "admin_full") : currentUserRole; }
+function phoneAccess(key){
+  return phoneAccessResolve(liveConfig, fbAuth.currentUser && fbAuth.currentUser.uid, phoneKind(), key, (p, explicit) => explicit ? isExplicitlyOn(p) : isVisible(p));
+}
+function applyCashViewOnly(root){ // "View only": keep the figures, remove every way to change them
+  if (!root || phoneAccess("cash") !== "view") return;
+  root.querySelectorAll("button, input, select, textarea").forEach(x => { if (x.id !== "cashDate" && x.id !== "cashRefresh") x.remove(); });
+}
+
+/* ---------------------- Receipts: change payment / Adjust (same records and rules as the dashboard's Receipts) ---------------------- */
+function receiptsCanEdit(inv){
+  if (phoneAccess("receiptsEdit") !== "edit") return false;
+  if (inv.date === todayStr() && phoneAccess("receiptsEditToday") !== "edit") return "today";
+  return true;
+}
+function openReceiptEditor(invoiceNo){
+  const inv = currentFilteredInvoices().find(i => i.invoiceNo === invoiceNo);
+  if (!inv || receiptsCanEdit(inv) !== true) return;
+  const baseTotal = inv.sessions.reduce((a, s) => a + effectiveRevenue(s), 0);
+  const adj = receiptAdjustmentFor(inv.invoiceNo);
+  const total = baseTotal + (adj ? adj.amount : 0);
+  const split = inv.method === "Split" ? receiptSplitFor(inv.invoiceNo) : null;
+  const cashDefault = split ? ((split.splits.find(x => x.method === "Cash") || {}).amount || 0) : total;
+  const upiDefault = split ? ((split.splits.find(x => x.method === "UPI") || {}).amount || 0) : 0;
+  const ov = document.createElement("div");
+  ov.id = "receiptEditOverlay";
+  ov.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:10001; display:flex; align-items:flex-start; justify-content:center; padding:16px; overflow-y:auto;";
+  ov.innerHTML = `<div class="panel" style="max-width:460px; width:100%; margin:0;">
+    <div class="panel-title">${escapeHtml(inv.invoiceNo)}</div>
+    <p class="panel-help">${escapeHtml(inv.date)} ${escapeHtml(inv.time || "")} · Total ${fmtMoney(total)}</p>
+    <div style="font-weight:600; margin-top:6px;">Payment</div>
+    <select id="reMethod" style="width:100%; margin-top:4px;">
+      ${["UPI", "Cash", "Card", "Split"].map(m => `<option value="${m}" ${inv.method === m ? "selected" : ""}>${m === "Split" ? "Split (Cash+UPI)" : m}</option>`).join("")}
+    </select>
+    <div id="reSplitRows" style="display:${inv.method === "Split" ? "flex" : "none"}; gap:8px; margin-top:6px;">
+      <label style="flex:1;">Cash<input type="number" id="reSplitCash" value="${cashDefault}" style="width:100%;"></label>
+      <label style="flex:1;">UPI<input type="number" id="reSplitUpi" value="${upiDefault}" style="width:100%;"></label>
+    </div>
+    <label style="display:block; margin-top:6px;">Txn Ref (optional)<input type="text" id="reTxnRef" value="${escapeHtml(receiptTxnRefFor(inv.invoiceNo) || "")}" style="width:100%;"></label>
+    <button class="btn btn-primary btn-small" id="reSavePay" style="margin-top:8px;">Save payment</button>
+    <div style="font-weight:600; margin-top:16px;">Adjustment</div>
+    <input type="text" id="reAdjLabel" value="${adj ? escapeHtml(adj.label) : "Reconciliation Adjustment"}" style="width:100%; margin-top:4px;">
+    <div style="display:flex; gap:8px; margin-top:6px;">
+      <input type="number" id="reAdjAmount" placeholder="Amount (+/-)" value="${adj ? adj.amount : ""}" style="flex:1;">
+      <select id="reAdjMethod" style="flex:1;">${["Cash", "UPI", "Card"].map(m => `<option ${adj && adj.method === m ? "selected" : ""}>${m}</option>`).join("")}</select>
+    </div>
+    <p class="panel-help" style="margin:4px 0;">Shows as its own labelled line on the receipt and in reports. Use a negative amount to reduce the total.</p>
+    <button class="btn btn-primary btn-small" id="reSaveAdj">Save adjustment</button>
+    ${adj ? `<button class="btn btn-outline btn-small" id="reRemoveAdj">Remove adjustment</button>` : ""}
+    <p class="panel-help" style="margin-top:12px;">Changes go straight to Firebase. The shop laptop's own copy updates the next time the FB file is opened on it as Admin.</p>
+    <div id="reStatus" class="panel-help" style="font-weight:600;"></div>
+    <button class="btn btn-outline btn-small" id="reClose" style="margin-top:6px;">Close</button>
+  </div>`;
+  document.body.appendChild(ov);
+  const $ = (id) => document.getElementById(id);
+  const close = () => ov.remove();
+  const done = async (msg) => {
+    $("reStatus").textContent = msg;
+    mallShareLoaded = false; // Mall Share / Analytics reload with the change
+    try { await loadReceiptsRange(receiptsLoadedRange.from, receiptsLoadedRange.to); } catch (e) {}
+    renderReceiptsTable();
+    setTimeout(close, 900);
+  };
+  const fail = (e) => { $("reStatus").textContent = "Couldn't save: " + (e && e.message ? e.message : e); };
+  $("reClose").addEventListener("click", close);
+  $("reMethod").addEventListener("change", () => { $("reSplitRows").style.display = $("reMethod").value === "Split" ? "flex" : "none"; });
+  $("reSavePay").addEventListener("click", async () => {
+    const newMethod = $("reMethod").value;
+    let splitsToSave = null;
+    if (newMethod === "Split") {
+      const cashAmt = parseFloat($("reSplitCash").value) || 0, upiAmt = parseFloat($("reSplitUpi").value) || 0;
+      if (Math.round((cashAmt + upiAmt) * 100) !== Math.round(total * 100)) { $("reStatus").textContent = `Cash + UPI (${fmtMoney(cashAmt + upiAmt)}) must equal the bill total (${fmtMoney(total)}).`; return; }
+      splitsToSave = [{ method: "Cash", amount: cashAmt }, { method: "UPI", amount: upiAmt }].filter(s => s.amount > 0);
+    }
+    if (!confirm(`Change payment for ${inv.invoiceNo} to ${newMethod === "Split" ? splitMethodLabel({ splits: splitsToSave }) : newMethod}? This updates the Cash / UPI totals for that day.`)) return;
+    try {
+      for (const s of inv.sessions) {
+        const upd = { method: newMethod };
+        if (newMethod !== "Card" && s.cardSurcharge) { upd.cardSurcharge = 0; upd.cardSurchargePct = 0; } // no longer a Card sale -- no surcharge (as the dashboard)
+        await fsDb.collection("sessions").doc(String(s.id)).update(upd);
+      }
+      if (newMethod === "Split") await fsDb.collection("paymentSplits").doc(inv.invoiceNo).set({ invoiceNo: inv.invoiceNo, splits: splitsToSave, total, recordedAt: new Date().toISOString() });
+      else if (split) await fsDb.collection("paymentSplits").doc(inv.invoiceNo).delete();
+      const ref = $("reTxnRef").value.trim(), oldRef = receiptTxnRefFor(inv.invoiceNo) || "";
+      if (ref !== oldRef) { if (ref) await fsDb.collection("txnRefs").doc(inv.invoiceNo).set({ invoiceNo: inv.invoiceNo, ref }); else await fsDb.collection("txnRefs").doc(inv.invoiceNo).delete(); }
+      await done("✅ Payment saved.");
+    } catch (e) { fail(e); }
+  });
+  $("reSaveAdj").addEventListener("click", async () => {
+    const label = $("reAdjLabel").value.trim() || "Reconciliation Adjustment";
+    const amount = parseFloat($("reAdjAmount").value);
+    if (isNaN(amount) || amount === 0) { $("reStatus").textContent = "Enter a non-zero amount."; return; }
+    const method = $("reAdjMethod").value;
+    if (!confirm(`Add "${label}": ${amount >= 0 ? "+" : ""}${fmtMoney(amount)} (${method}) to ${inv.invoiceNo}?`)) return;
+    try { await fsDb.collection("invoiceAdjustments").doc(inv.invoiceNo).set({ invoiceNo: inv.invoiceNo, label, amount, method, staff: currentStaffName(), time: timeStr(new Date()) }); await done("✅ Adjustment saved."); }
+    catch (e) { fail(e); }
+  });
+  if ($("reRemoveAdj")) $("reRemoveAdj").addEventListener("click", async () => {
+    if (!confirm("Remove this adjustment? The bill total goes back to the package price.")) return;
+    try { await fsDb.collection("invoiceAdjustments").doc(inv.invoiceNo).delete(); await done("✅ Adjustment removed."); }
+    catch (e) { fail(e); }
+  });
+}
+
 
 async function doLogin(){
   const staffId = document.getElementById("loginId").value.trim();
@@ -585,36 +754,23 @@ async function doLogin(){
 // role) gets the queue tool plus Operations/Receipts, so either the desk or a phone can be the
 // one assigning chairs or taking a booking.
 function computeVisibleTabs(){
-  let allTabs;
-  if (currentUserRole === "mall_admin") {
-    allTabs = [
-      { id: "operations", label: "Operations" },
-      { id: "receipts", label: "Receipts" },
-      { id: "mdshare", label: "Mall Share" },
-      { id: "analytics", label: "Analytics" }
-    ];
-  } else if (currentUserRole === "staff") {
-    allTabs = [ { id: "queue", label: "Queue" } ];
-    if (liveConfig.mobileBookingEnabled) allTabs.push({ id: "book", label: "Book" });
-    if (hrPhoneShowTab()) allTabs.push({ id: "attendance", label: "Attendance" });
-    if (hrPhoneAttendanceOnly()) allTabs = [ { id: "attendance", label: "Attendance" } ]; // attendance-only login
-  } else {
-    allTabs = [ { id: "queue", label: "Queue" } ];
-    if (liveConfig.mobileBookingEnabled) allTabs.push({ id: "book", label: "Book" });
-    allTabs.push({ id: "operations", label: "Operations" }, { id: "receipts", label: "Receipts" });
-    // Admin-only tools, each switched on from the dashboard's Settings ("Admin tools on the phone page")
-    const apt = liveConfig.adminPhoneTools || {};
-    if (currentUserRole === "admin" && (apt.dailySummary || apt.revenueShare)) allTabs.push({ id: "mdshare", label: "Mall Share" });
-    if (currentUserRole === "admin" && apt.cashRegister) allTabs.push({ id: "cash", label: "Cash" });
-    if (currentUserRole === "admin" && apt.analytics) allTabs.push({ id: "analytics", label: "Analytics" });
-    if (hrPhoneShowTab()) allTabs.push({ id: "attendance", label: "Attendance" });
-    if (hrPhoneStaffTab()) allTabs.push({ id: "staff", label: "Staff" });
-    allTabs.push({ id: "settings", label: "Settings" });
-  }
-  // The visibility JSON only ever applies to the mall_admin experience -- it's what YOU use to
-  // control what Mall Admin sees; it was never meant to also gate your own or staff's tools.
-  const visibleTabs = currentUserRole === "mall_admin" ? allTabs.filter(t => isVisible(t.id + ".enabled")) : allTabs;
-  return { allTabs, visibleTabs };
+  // Everything comes from the dashboard's Access tab (meta/config.phoneAccess); with nothing set there, each
+  // role sees exactly what it saw before (Mall Admin still from the visibility file on GitHub).
+  const can = (k) => phoneAccess(k) !== "hidden";
+  const allTabs = [];
+  if (can("queue")) allTabs.push({ id: "queue", label: "Queue" });
+  if (liveConfig.mobileBookingEnabled && can("book")) allTabs.push({ id: "book", label: "Book" });
+  if (can("operations")) allTabs.push({ id: "operations", label: "Operations" });
+  if (can("receipts")) allTabs.push({ id: "receipts", label: "Receipts" });
+  if (can("mdshare")) allTabs.push({ id: "mdshare", label: "Mall Share" });
+  if (can("cash")) allTabs.push({ id: "cash", label: "Cash" });
+  if (can("analytics")) allTabs.push({ id: "analytics", label: "Analytics" });
+  if (can("attendance") && hrPhoneShowTab()) allTabs.push({ id: "attendance", label: "Attendance" }); // JCT HR: still needs clock-in set up
+  if (can("staffProfiles") && hrPhoneStaffTab()) allTabs.push({ id: "staff", label: "Staff" });
+  if (can("phoneSettings")) allTabs.push({ id: "settings", label: "Settings" });
+  if (hrPhoneAttendanceOnly()) return { allTabs: [{ id: "attendance", label: "Attendance" }], visibleTabs: [{ id: "attendance", label: "Attendance" }] }; // attendance-only login
+  if (!allTabs.length) allTabs.push({ id: "noaccess", label: "\u2014" });
+  return { allTabs, visibleTabs: allTabs };
 }
 
 // Rebuilds just the tab bar (and fixes up currentTab if it just got hidden) -- called both at
@@ -644,6 +800,7 @@ function refreshTabBar(){
 async function buildApp(){
   if (!mallsList.length) await loadMallsList();
   await loadVisibilityConfig();
+  await loadPhoneAdminLevel();
 
   document.getElementById("root").innerHTML = `
     <div class="topbar">
@@ -693,7 +850,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false, phoneAccess: config.phoneAccess || {} };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
@@ -804,6 +961,7 @@ async function renderSettingsTab(){
 
 function render(){
   renderTimesUpTray();
+  if (currentTab === "noaccess") { const el = document.getElementById("mainContent"); if (el) el.innerHTML = `<p class="panel-help">Nothing is switched on for your login yet. Please ask the Admin.</p>`; return; }
   if (currentTab === "receipts") { renderReceiptsTab(); return; }
   if (currentTab === "mdshare") { renderMallShareTab(); return; }
   if (currentTab === "cash") { renderCashTab(); return; }
@@ -1177,7 +1335,7 @@ async function renderReceiptsTab(){
         <button class="btn btn-outline btn-small" id="rTodayBtn">Today Only</button>
         <button class="btn btn-outline btn-small" id="rExcelBtn">Excel</button>
         <button class="btn btn-outline btn-small" id="rPdfBtn">PDF</button>
-        ${(currentUserRole === "admin" && (liveConfig.adminPhoneTools || {}).receiptsZip) ? `<button class="btn btn-primary btn-small" id="rZipBtn">ZIP of these receipts</button>` : ""}
+        ${phoneAccess("receiptsZip") !== "hidden" ? `<button class="btn btn-primary btn-small" id="rZipBtn">ZIP of these receipts</button>` : ""}
       </div>
       <div class="table-scroll"><table class="data-table" id="rTable"><tbody><tr><td>Loading\u2026</td></tr></tbody></table></div>
     </div>`;
@@ -1246,6 +1404,7 @@ function renderReceiptsTable(){
         <td class="receipt-actions">
           <button class="btn btn-small btn-primary r-print-btn" data-invoice="${escapeHtml(inv.invoiceNo)}">Print</button>
           <button class="btn btn-small btn-outline r-pdf-btn" data-invoice="${escapeHtml(inv.invoiceNo)}">PDF</button>
+          ${(() => { const c = receiptsCanEdit(inv); if (!c) return ""; if (c === "today") return `<div style="font-size:11px; opacity:0.7; white-space:normal;">Today's bill \u2014 change it at the shop</div>`; return `<button class="btn btn-small btn-outline r-edit-btn" data-invoice="${escapeHtml(inv.invoiceNo)}">Change / Adjust</button>`; })()}
         </td>
       </tr>`;
     }).join("")}</tbody>`;
@@ -1254,6 +1413,7 @@ function renderReceiptsTable(){
     const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
     if (inv) printReceiptSimple(invoiceToSaleObject(inv));
   })));
+  tableEl.querySelectorAll(".r-edit-btn").forEach(b => b.addEventListener("click", () => openReceiptEditor(b.dataset.invoice)));
   tableEl.querySelectorAll(".r-pdf-btn").forEach(b => b.addEventListener("click", () => withBusyButton(b, async () => {
     const inv = invoicesFromSessions().find(i => i.invoiceNo === b.dataset.invoice);
     if (inv) exportReceiptPDFSimple(invoiceToSaleObject(inv));
@@ -2375,6 +2535,7 @@ async function renderCashTab(force){
     if (ca) ca.addEventListener("click", () => { cashTabEditing[k] = false; renderCashTab(); });
   });
   await renderCashBoxPhone(D, T);
+  applyCashViewOnly(document.getElementById("cashTabRoot"));
 }
 
 /* ==================== CHANGE BOX (spare change kept in a second drawer) ====================
@@ -2450,10 +2611,10 @@ async function renderCashBoxPhone(D, T){
     ${(R.morning || R.night) ? `<div style="font-weight:600; margin:6px 0;">Shop cash check (Drawer + Change Box)</div>
       <table class="data-table"><tr><th></th><th>Counted</th><th>Should be</th><th>Result</th></tr>${line("Morning", R.morning)}${line("Night", R.night)}</table>` : ""}
     ${slot("boxMorning", "Morning count", R.bM)}${slot("boxNight", "Night count", R.bN)}
-    <div style="font-weight:600; margin:10px 0 6px;">Owner: cash taken out / put in</div>
+    ${phoneAccess("cashOwner") === "edit" ? `<div style="font-weight:600; margin:10px 0 6px;">Owner: cash taken out / put in</div>
     ${isToday ? `<div style="display:flex; gap:6px;"><input type="number" min="0" inputmode="decimal" id="cbTaken" placeholder="Taken out ₹" style="flex:1;"><input type="number" min="0" inputmode="decimal" id="cbAdded" placeholder="Put in ₹" style="flex:1;"></div>
       <input type="text" id="cbOwnerNote" placeholder="Note (optional)" style="width:100%; margin-top:6px;">
-      <button class="btn btn-primary btn-small" id="cbOwnerSave" style="margin-top:6px;">Save</button>` : `<p class="panel-help">Owner entries are added on today's date.</p>`}
+      <button class="btn btn-primary btn-small" id="cbOwnerSave" style="margin-top:6px;">Save</button>` : `<p class="panel-help">Owner entries are added on today's date.</p>`}` : ""}
     ${R.ownerToday.map(o => `<div style="font-size:13px; margin-top:6px;">${escapeHtml(o.time || "")} · ${o.taken ? `Taken out ${fmtMoney(o.taken)}` : ""}${o.taken && o.added ? " · " : ""}${o.added ? `Put in ${fmtMoney(o.added)}` : ""}${o.note ? ` · ${escapeHtml(o.note)}` : ""} <button class="btn btn-outline btn-small cb-owner-del" data-id="${o.id}">Delete</button></div>`).join("")}`;
   const $ = (id) => document.getElementById(id);
   const read = (key) => { const o = {}; box.querySelectorAll(`.cash-denom[data-prefix="${key}"]`).forEach(i => { o[i.dataset.denom] = i.value; }); return o; };
@@ -2772,10 +2933,9 @@ async function renderMallShareTab(){
   const earliest = dates[0] || todayStr();
   const todayS = todayStr();
 
-  const aptMs = liveConfig.adminPhoneTools || {};
   const isAdminMs = currentUserRole === "admin";
-  const showDps = isAdminMs && !!aptMs.dailySummary;
-  const hideRs = isAdminMs && !aptMs.revenueShare; // Mall Admin always sees these, exactly as before
+  const showDps = isAdminMs && phoneAccess("dailySummary") !== "hidden";
+  const hideRs = isAdminMs && phoneAccess("revenueShare") === "hidden"; // Mall Admin always sees these, exactly as before
   el.innerHTML = `
     ${showDps ? `<div class="panel">
       <div class="panel-title">Daily Performance Summary</div>
@@ -3323,7 +3483,7 @@ async function renderAnalyticsTab(){
   const weekStart = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()));
   const monthStart = todayStrFromDate(new Date(now.getFullYear(), now.getMonth(), 1));
 
-  const showAll = currentUserRole === "admin"; // the visibility settings file is only for Mall Admin; Admin sees everything
+  const showAll = currentUserRole !== "mall_admin"; // the visibility settings file is only for Mall Admin; anyone else given the tab sees every panel
   const revenuePanel = (showAll || isVisible("analytics.revenue")) ? `
     <div class="panel">
       <div class="panel-title">Revenue</div>
@@ -3363,7 +3523,7 @@ async function renderAnalyticsTab(){
   // Optional panels -- each stays hidden until its key is set to true in the visibility settings file.
   const salesTrendPanelHtml = (showAll || isExplicitlyOn("analytics.salesTrend")) ? `<div class="panel" id="salesTrendPanel"></div>` : "";
   const relaxedPanelHtml = (showAll || isExplicitlyOn("analytics.customersRelaxed")) ? `<div class="panel" id="customersRelaxedPanel"></div>` : "";
-  const hourlyPanelHtml = (showAll || isExplicitlyOn("analytics.hourlyPerformance")) ? `<div class="panel" id="hourlyPerfPanel"></div>` : "";
+  const hourlyPanelHtml = phoneAccess("hourly") !== "hidden" ? `<div class="panel" id="hourlyPerfPanel"></div>` : "";
   el.innerHTML = (revenuePanel + salesTrendPanelHtml + relaxedPanelHtml + hourlyPanelHtml + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
   initSalesTrendPanel();
   initCustomersRelaxedPanel();
