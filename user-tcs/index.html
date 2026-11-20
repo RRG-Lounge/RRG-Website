@@ -1784,7 +1784,7 @@ function admComputeMdSummary(from, to){
 function admSurchargeOf(s){ return (s.cardSurcharge > 0 && !(s.status === "cancelled" && s.refunded)) ? s.cardSurcharge : 0; }
 function admCardSurchargeForDate(dateStr){ return mallShareSessions.reduce((a, x) => x.date === dateStr ? a + admSurchargeOf(x) : a, 0); }
 function admReconciliationStatusForDate(dateStr){
-  const counts = admCashCounts.filter(c => c.date === dateStr);
+  const counts = cashLatestOnly(admCashCounts.filter(c => c.date === dateStr)); // same as the dashboard's cashCountsForDate
   const opening = counts.find(c => c.type === "opening");
   const closing = counts.find(c => c.type === "closing");
   const upi = counts.find(c => c.type === "upiReceived");
@@ -2379,6 +2379,34 @@ async function buildZip(files){
 
 
 
+/* ---------- One entry per day for the Cash Register counts (20 Nov 2026) ----------
+   Opening, Closing, UPI / Card bank credit and the Change Box morning / night count are ONE entry per day.
+   If two devices each saved one (e.g. the phone at 7:20 pm and the shop laptop at 9:40 pm before it had sent),
+   the LATEST save is the one shown and used everywhere; the other is kept in its edit history when merged. */
+const CASH_ONE_PER_DAY = ["opening", "closing", "upiReceived", "cardReceived", "boxMorning", "boxNight"];
+function cashLatestOnly(rows){
+  const best = {}, out = [];
+  rows.forEach(r => {
+    if (!CASH_ONE_PER_DAY.includes(r.type)) { out.push(r); return; }
+    const k = r.date + "|" + r.type, b = best[k];
+    if (!b || (r.savedAt || 0) > (b.savedAt || 0)) best[k] = r;
+  });
+  return out.concat(Object.values(best));
+}
+function cashDuplicateGroups(rows){ // [{ type, latest, others: [...] }] for each one-per-day type saved more than once
+  const by = {};
+  rows.forEach(r => { if (CASH_ONE_PER_DAY.includes(r.type)) (by[r.date + "|" + r.type] = by[r.date + "|" + r.type] || []).push(r); });
+  return Object.values(by).filter(g => g.length > 1).map(g => { const s = g.slice().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0)); return { type: s[0].type, latest: s[0], others: s.slice(1) }; });
+}
+function cashHistEntry(r){ return { date: r.date, time: r.time, staff: r.staff, total: r.total, count: r.count != null ? r.count : null, variance: r.variance != null ? r.variance : null, savedAt: r.savedAt || null, merged: true }; }
+function cashMergedRecord(winner, losers){ // the winner, with each other entry (and its own history) kept in history
+  const h = (Array.isArray(winner.history) ? winner.history : []).slice();
+  losers.forEach(l => { (Array.isArray(l.history) ? l.history : []).forEach(x => h.push(x)); h.push(cashHistEntry(l)); });
+  h.sort((a, b) => (a.savedAt || 0) - (b.savedAt || 0));
+  return Object.assign({}, winner, { history: h.slice(-20) });
+}
+const CASH_TYPE_LABEL = { opening: "Opening Float", closing: "Closing Count", upiReceived: "UPI bank credit", cardReceived: "Card bank credit", boxMorning: "Change Box (morning)", boxNight: "Change Box (night)" };
+
 /* ---------------------- Admin: Cash Register on the phone (Build 3, part 2) ----------------------
    Admin login only, behind the dashboard switch adminPhoneTools.cashRegister. Same records and the
    same arithmetic as the dashboard's Cash Register: expected cash = Opening Float + Cash collected that
@@ -2397,7 +2425,8 @@ async function loadCashTabData(date){
   cashTabData = { date,
     sessions: s.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })),
     splits: sp.docs.map(d => d.data()), adjs: adj.docs.map(d => d.data()),
-    counts: cc.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })) };
+    rawCounts: cc.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })) };
+  cashTabData.counts = cashLatestOnly(cashTabData.rawCounts); // a count saved twice for the day: the latest one counts
 }
 // Same as the dashboard's paymentMethodTotalsForDate, on this day's loaded records
 function cashTabMethodTotals(){
@@ -2439,13 +2468,25 @@ function cashHistoryHTML(rec){
 }
 async function saveCashCount(record, prev){
   record.savedAt = Date.now();
+  // Re-check Firebase just before saving: the shop laptop or the dashboard may have saved this day's entry meanwhile.
+  // Then this save EDITS that entry (and folds any extra copies into its history) instead of creating a second one.
+  let extras = [];
+  if (CASH_ONE_PER_DAY.includes(record.type)) {
+    try {
+      const snap = await fsDb.collection("cashCounts").where("date", "==", record.date).get();
+      const same = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })).filter(c => c.type === record.type).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+      if (same.length) { prev = same[0]; extras = same.slice(1); }
+    } catch (e) { /* offline: fall back to what's on screen */ }
+  }
   if (prev) {
     const h = Array.isArray(prev.history) ? prev.history.slice(-19) : [];
     h.push({ date: prev.date, time: prev.time, staff: prev.staff, total: prev.total, count: prev.count != null ? prev.count : null, variance: prev.variance != null ? prev.variance : null, savedAt: prev.savedAt || null });
     record.history = h;
+    if (extras.length) record.history = cashMergedRecord(record, extras).history;
   }
   const id = prev ? prev.id : nextLocalId();
   await fsDb.collection("cashCounts").doc(String(id)).set(record); // same shape as the dashboard: id is the document key
+  for (const x of extras) await fsDb.collection("cashCounts").doc(String(x.id)).delete();
 }
 async function renderCashTab(force){
   const el = document.getElementById("mainContent");
@@ -2480,6 +2521,7 @@ async function renderCashTab(force){
   el.innerHTML = `<div id="cashTabRoot">
     <div class="panel">
       <div class="panel-title">Cash Register</div>
+      ${(() => { const g = cashDuplicateGroups(D.rawCounts || []); return g.length ? `<div style="border:1px solid #e6a23c; border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:13px;">\u26A0 ${g.map(x => `<b>${escapeHtml(CASH_TYPE_LABEL[x.type] || x.type)}</b> saved ${x.others.length + 1} times (${[x.latest].concat(x.others).map(r => `${escapeHtml(r.staff || "")} ${escapeHtml(r.time || "")} ${fmtMoney(r.total || 0)}`).join(" / ")})`).join("; ")} \u2014 showing the latest. <button class="btn btn-primary btn-small" id="cashDupMerge">Merge into one</button></div>` : ""; })()}
       <p class="panel-help">TCS staff count in the shop's offline file: their counts show here only after they press "Send to Firebase". Enter a count here only when staff will NOT enter the same one in the shop file, or it will be saved twice.</p>
       <div class="btn-group"><div class="filter-field">Date<input type="date" id="cashDate" value="${cashTabDate}" max="${todayStr()}"></div>
         <button class="btn btn-outline btn-small" id="cashRefresh">Refresh</button></div>
@@ -2509,6 +2551,14 @@ async function renderCashTab(force){
   if (dateEl.showPicker) dateEl.addEventListener("click", () => { try { dateEl.showPicker(); } catch (_) {} });
   dateEl.addEventListener("change", () => { if (dateEl.value) { cashTabDate = dateEl.value; cashTabEditing = {}; renderCashTab(true); } });
   $("cashRefresh").addEventListener("click", () => renderCashTab(true));
+  if ($("cashDupMerge")) $("cashDupMerge").addEventListener("click", (e) => run(e.currentTarget, async () => {
+    if (!confirm("Keep the latest entry of each, and move the others into its edit history?")) return;
+    for (const g of cashDuplicateGroups(D.rawCounts || [])) {
+      const w = cashMergedRecord(g.latest, g.others), id = w.id; delete w.id;
+      await fsDb.collection("cashCounts").doc(String(id)).set(w);
+      for (const o of g.others) await fsDb.collection("cashCounts").doc(String(o.id)).delete();
+    }
+  }));
   const readDenoms = (prefix) => { const o = {}; el.querySelectorAll(`.cash-denom[data-prefix="${prefix}"]`).forEach(i => { o[i.dataset.denom] = i.value; }); return o; };
   const liveTotals = () => {
     ["opening", "closing"].forEach(prefix => { const t = $(prefix + "Total"); if (t) t.textContent = fmtMoney(cashDenomTotal(readDenoms(prefix))); });
@@ -2558,7 +2608,7 @@ async function renderCashTab(force){
    Saved in cashCounts as types boxMorning / boxNight / boxOwner -- the same records and rules as the Cash Register. */
 function changeBoxCompute(all, dateStr, cashSales){
   const ts = (r) => (r && r.savedAt) || 0;
-  const on = (d, t) => all.find(c => c.date === d && c.type === t);
+  const on = (d, t) => cashLatestOnly(all.filter(c => c.date === d)).find(c => c.type === t);
   const dOpen = on(dateStr, "opening"), dClose = on(dateStr, "closing"), bM = on(dateStr, "boxMorning"), bN = on(dateStr, "boxNight");
   const owners = all.filter(c => c.type === "boxOwner");
   const sum = (list) => list.reduce((a, c) => a + (c.net || 0), 0);
