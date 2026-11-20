@@ -853,7 +853,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false, phoneAccess: config.phoneAccess || {}, phoneHistoryMin: config.phoneHistoryMin || 30, tagline: config.tagline || "", businessAddress: config.businessAddress || "", businessPhone: config.businessPhone || "", printerWidthMM: config.printerWidthMM || 80, phonePrintEnabled: config.phonePrintEnabled, phonePrintAuto: config.phonePrintAuto !== false };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false, phoneAccess: config.phoneAccess || {}, phoneHistoryMin: config.phoneHistoryMin || 30, androidShareMax: config.androidShareMax || 30, tagline: config.tagline || "", businessAddress: config.businessAddress || "", businessPhone: config.businessPhone || "", printerWidthMM: config.printerWidthMM || 80, phonePrintEnabled: config.phonePrintEnabled, phonePrintAuto: config.phonePrintAuto !== false };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
@@ -1883,7 +1883,7 @@ function admComputeMdSummary(from, to){
 function admSurchargeOf(s){ return (s.cardSurcharge > 0 && !(s.status === "cancelled" && s.refunded)) ? s.cardSurcharge : 0; }
 function admCardSurchargeForDate(dateStr){ return mallShareSessions.reduce((a, x) => x.date === dateStr ? a + admSurchargeOf(x) : a, 0); }
 function admReconciliationStatusForDate(dateStr){
-  const counts = admCashCounts.filter(c => c.date === dateStr);
+  const counts = cashLatestOnly(admCashCounts.filter(c => c.date === dateStr)); // same as the dashboard's cashCountsForDate
   const opening = counts.find(c => c.type === "opening");
   const closing = counts.find(c => c.type === "closing");
   const upi = counts.find(c => c.type === "upiReceived");
@@ -2323,37 +2323,56 @@ async function receiptPdfBytes(sale){
   try { await exportReceiptPDFSimple(sale); } finally { api.save = orig; }
   return { name: name || ((sale.invoiceNo || "Receipt").replace(/[^\w-]/g, "_") + ".pdf"), bytes };
 }
-async function shareOrDownloadFile(blob, filename, mime){
-  const file = new File([blob], filename, { type: mime });
-  if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: filename }); return; } catch (e) {
-      if (e && e.name === "AbortError") return;
-      // iPhone only opens the Share sheet straight after a tap. If making the file took longer than
-      // that, it refuses (NotAllowedError) -- so show one "Share" button to tap, which opens it.
-      if (e && e.name === "NotAllowedError") { await offerTapToShare(file); return; }
-    }
-  }
+/* ---------------------- Sharing files (21 Nov 2026 b) ----------------------
+   iPhone shares any file. Android Chrome only shares some types (PDF, pictures...), NOT ZIP or Excel -- it refused
+   silently, so "Share" did nothing. Now: if a share can't happen, the file is DOWNLOADED instead, with a note; and
+   Receipts > ZIP on Android offers "Share as PDFs" (in batches, Settings > Data loading) or "Download ZIP". */
+function downloadBlob(blob, filename){
   const url = URL.createObjectURL(blob), a = document.createElement("a");
   a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
-function offerTapToShare(file){
+function shareNote(msg){
+  const old = document.getElementById("shareNote"); if (old) old.remove();
+  const n = document.createElement("div"); n.id = "shareNote"; n.textContent = msg;
+  n.style.cssText = "position:fixed;left:12px;right:12px;bottom:calc(16px + env(safe-area-inset-bottom,0px));background:#16332C;color:#fff;padding:12px 14px;border-radius:10px;font-size:14px;z-index:10000;text-align:center;";
+  document.body.appendChild(n); setTimeout(() => n.remove(), 6000);
+}
+function canShareFiles(files){ try { return !!(navigator.share && navigator.canShare && navigator.canShare({ files })); } catch (e) { return false; } }
+function savedNote(filename){ shareNote(`${filename} saved to Downloads \u2014 attach it in WhatsApp from there.`); }
+async function shareOrDownloadFile(blob, filename, mime){
+  const file = new File([blob], filename, { type: mime });
+  if (canShareFiles([file])) {
+    try { await navigator.share({ files: [file], title: filename }); return "shared"; } catch (e) {
+      if (e && e.name === "AbortError") return "cancelled";
+      // iPhone only opens the Share sheet straight after a tap; if making the file took longer, it refuses
+      // (NotAllowedError) -- so offer one more tap, with Download as the other choice.
+      if (e && e.name === "NotAllowedError") return await offerTapToShare(file);
+    }
+  }
+  downloadBlob(blob, filename); savedNote(filename); return "downloaded";
+}
+// A small box with buttons; each button runs during the tap (so the phone allows the Share sheet)
+function shareBox(title, buttons){
   return new Promise(resolve => {
-    const ov = document.createElement("div");
-    ov.id = "tapToShareOverlay";
+    const ov = document.createElement("div"); ov.id = "tapToShareOverlay";
     ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;";
     ov.innerHTML = `<div style="background:#fff;color:#16332C;border-radius:10px;padding:18px;max-width:340px;width:100%;text-align:center;">
-      <p style="margin:0 0 12px;font-size:15px;">${escapeHtml(file.name)} is ready.</p>
-      <button class="btn btn-primary" id="tapToShareBtn">Share</button>
-      <button class="btn btn-outline" id="tapToShareCancel" style="margin-left:8px;">Cancel</button></div>`;
+      <p style="margin:0 0 12px;font-size:15px;">${escapeHtml(title)}</p>
+      ${buttons.map((b, k) => `<button class="btn ${k === 0 ? "btn-primary" : "btn-outline"}" data-k="${k}" ${k === 0 ? 'id="tapToShareBtn"' : ""} style="display:block;width:100%;margin:6px 0;">${escapeHtml(b.label)}</button>`).join("")}
+      <button class="btn btn-outline" id="tapToShareCancel" style="display:block;width:100%;margin:6px 0;">Cancel</button></div>`;
     document.body.appendChild(ov);
-    const done = () => { ov.remove(); resolve(); };
-    ov.querySelector("#tapToShareCancel").addEventListener("click", done);
-    ov.querySelector("#tapToShareBtn").addEventListener("click", async () => {
-      try { await navigator.share({ files: [file], title: file.name }); } catch (e) {}
-      done();
-    });
+    const close = (r) => { ov.remove(); resolve(r); };
+    ov.querySelector("#tapToShareCancel").addEventListener("click", () => close("cancelled"));
+    buttons.forEach((b, k) => ov.querySelector(`[data-k="${k}"]`).addEventListener("click", async () => { const r = await b.run(); if (r !== "keep") close(r); }));
   });
+}
+function offerTapToShare(file){
+  return shareBox(`${file.name} is ready.`, [
+    { label: "Share", run: async () => { try { await navigator.share({ files: [file], title: file.name }); return "shared"; }
+        catch (e) { if (e && e.name === "AbortError") return "cancelled"; downloadBlob(file, file.name); savedNote(file.name); return "downloaded"; } } },
+    { label: "Download instead", run: async () => { downloadBlob(file, file.name); savedNote(file.name); return "downloaded"; } }
+  ]);
 }
 async function zipShownReceipts(btn){
   const invoices = currentFilteredInvoices();
@@ -2368,7 +2387,23 @@ async function zipShownReceipts(btn){
     }
     btn.textContent = "Zipping\u2026";
     const zip = await buildZip(files);
-    await shareOrDownloadFile(zip, `RRG_Receipts_${label}.zip`, "application/zip");
+    const zipName = `RRG_Receipts_${label}.zip`;
+    const pdfs = files.map(f => new File([f.bytes], f.name, { type: "application/pdf" }));
+    // Android: a ZIP can't be shared, PDFs can -> offer "Share as PDFs" (in batches) or "Download ZIP"
+    if (!canShareFiles([new File([zip], zipName, { type: "application/zip" })]) && canShareFiles(pdfs.slice(0, 1))) {
+      const per = Math.min(100, Math.max(5, liveConfig.androidShareMax || 30)), parts = Math.ceil(pdfs.length / per);
+      let next = 0;
+      await shareBox(`${invoices.length} receipt${invoices.length === 1 ? "" : "s"} ready. This phone can't share a ZIP \u2014 share them as PDFs${parts > 1 ? ` (${parts} parts)` : ""}, or download the ZIP.`, [
+        { label: parts > 1 ? `Share as PDFs (part 1 of ${parts})` : `Share as PDFs (${pdfs.length})`, run: async () => {
+            const batch = pdfs.slice(next * per, next * per + per);
+            try { await navigator.share({ files: batch, title: zipName }); } catch (e) { if (!(e && e.name === "AbortError")) { downloadBlob(zip, zipName); savedNote(zipName); return "downloaded"; } return "keep"; }
+            next++;
+            if (next >= parts) return "shared";
+            const b0 = document.querySelector('#tapToShareOverlay [data-k="0"]'); if (b0) b0.textContent = `Share as PDFs (part ${next + 1} of ${parts})`;
+            return "keep"; } },
+        { label: "Download ZIP", run: async () => { downloadBlob(zip, zipName); savedNote(zipName); return "downloaded"; } }
+      ]);
+    } else await shareOrDownloadFile(zip, zipName, "application/zip");
   } catch (e) { alert("Couldn't make the ZIP: " + e.message); }
   finally { btn.disabled = false; btn.textContent = old; }
 }
@@ -2478,6 +2513,34 @@ async function buildZip(files){
 
 
 
+/* ---------- One entry per day for the Cash Register counts (20 Nov 2026) ----------
+   Opening, Closing, UPI / Card bank credit and the Change Box morning / night count are ONE entry per day.
+   If two devices each saved one (e.g. the phone at 7:20 pm and the shop laptop at 9:40 pm before it had sent),
+   the LATEST save is the one shown and used everywhere; the other is kept in its edit history when merged. */
+const CASH_ONE_PER_DAY = ["opening", "closing", "upiReceived", "cardReceived", "boxMorning", "boxNight"];
+function cashLatestOnly(rows){
+  const best = {}, out = [];
+  rows.forEach(r => {
+    if (!CASH_ONE_PER_DAY.includes(r.type)) { out.push(r); return; }
+    const k = r.date + "|" + r.type, b = best[k];
+    if (!b || (r.savedAt || 0) > (b.savedAt || 0)) best[k] = r;
+  });
+  return out.concat(Object.values(best));
+}
+function cashDuplicateGroups(rows){ // [{ type, latest, others: [...] }] for each one-per-day type saved more than once
+  const by = {};
+  rows.forEach(r => { if (CASH_ONE_PER_DAY.includes(r.type)) (by[r.date + "|" + r.type] = by[r.date + "|" + r.type] || []).push(r); });
+  return Object.values(by).filter(g => g.length > 1).map(g => { const s = g.slice().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0)); return { type: s[0].type, latest: s[0], others: s.slice(1) }; });
+}
+function cashHistEntry(r){ return { date: r.date, time: r.time, staff: r.staff, total: r.total, count: r.count != null ? r.count : null, variance: r.variance != null ? r.variance : null, savedAt: r.savedAt || null, merged: true }; }
+function cashMergedRecord(winner, losers){ // the winner, with each other entry (and its own history) kept in history
+  const h = (Array.isArray(winner.history) ? winner.history : []).slice();
+  losers.forEach(l => { (Array.isArray(l.history) ? l.history : []).forEach(x => h.push(x)); h.push(cashHistEntry(l)); });
+  h.sort((a, b) => (a.savedAt || 0) - (b.savedAt || 0));
+  return Object.assign({}, winner, { history: h.slice(-20) });
+}
+const CASH_TYPE_LABEL = { opening: "Opening Float", closing: "Closing Count", upiReceived: "UPI bank credit", cardReceived: "Card bank credit", boxMorning: "Change Box (morning)", boxNight: "Change Box (night)" };
+
 /* ---------------------- Admin: Cash Register on the phone (Build 3, part 2) ----------------------
    Admin login only, behind the dashboard switch adminPhoneTools.cashRegister. Same records and the
    same arithmetic as the dashboard's Cash Register: expected cash = Opening Float + Cash collected that
@@ -2496,7 +2559,8 @@ async function loadCashTabData(date){
   cashTabData = { date,
     sessions: s.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })),
     splits: sp.docs.map(d => d.data()), adjs: adj.docs.map(d => d.data()),
-    counts: cc.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })) };
+    rawCounts: cc.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })) };
+  cashTabData.counts = cashLatestOnly(cashTabData.rawCounts); // a count saved twice for the day: the latest one counts
 }
 // Same as the dashboard's paymentMethodTotalsForDate, on this day's loaded records
 function cashTabMethodTotals(){
@@ -2538,13 +2602,25 @@ function cashHistoryHTML(rec){
 }
 async function saveCashCount(record, prev){
   record.savedAt = Date.now();
+  // Re-check Firebase just before saving: the shop laptop or the dashboard may have saved this day's entry meanwhile.
+  // Then this save EDITS that entry (and folds any extra copies into its history) instead of creating a second one.
+  let extras = [];
+  if (CASH_ONE_PER_DAY.includes(record.type)) {
+    try {
+      const snap = await fsDb.collection("cashCounts").where("date", "==", record.date).get();
+      const same = snap.docs.map(d => Object.assign({}, d.data(), { id: parseInt(d.id, 10) })).filter(c => c.type === record.type).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+      if (same.length) { prev = same[0]; extras = same.slice(1); }
+    } catch (e) { /* offline: fall back to what's on screen */ }
+  }
   if (prev) {
     const h = Array.isArray(prev.history) ? prev.history.slice(-19) : [];
     h.push({ date: prev.date, time: prev.time, staff: prev.staff, total: prev.total, count: prev.count != null ? prev.count : null, variance: prev.variance != null ? prev.variance : null, savedAt: prev.savedAt || null });
     record.history = h;
+    if (extras.length) record.history = cashMergedRecord(record, extras).history;
   }
   const id = prev ? prev.id : nextLocalId();
   await fsDb.collection("cashCounts").doc(String(id)).set(record); // same shape as the dashboard: id is the document key
+  for (const x of extras) await fsDb.collection("cashCounts").doc(String(x.id)).delete();
 }
 async function renderCashTab(force){
   const el = document.getElementById("mainContent");
@@ -2579,6 +2655,7 @@ async function renderCashTab(force){
   el.innerHTML = `<div id="cashTabRoot">
     <div class="panel">
       <div class="panel-title">Cash Register</div>
+      ${(() => { const g = cashDuplicateGroups(D.rawCounts || []); return g.length ? `<div style="border:1px solid #e6a23c; border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:13px;">\u26A0 ${g.map(x => `<b>${escapeHtml(CASH_TYPE_LABEL[x.type] || x.type)}</b> saved ${x.others.length + 1} times (${[x.latest].concat(x.others).map(r => `${escapeHtml(r.staff || "")} ${escapeHtml(r.time || "")} ${fmtMoney(r.total || 0)}`).join(" / ")})`).join("; ")} \u2014 showing the latest. <button class="btn btn-primary btn-small" id="cashDupMerge">Merge into one</button></div>` : ""; })()}
       <div class="btn-group"><div class="filter-field">Date<input type="date" id="cashDate" value="${cashTabDate}" max="${todayStr()}"></div>
         <button class="btn btn-outline btn-small" id="cashRefresh">Refresh</button></div>
       <table class="data-table" style="margin-top:8px;">
@@ -2607,6 +2684,14 @@ async function renderCashTab(force){
   if (dateEl.showPicker) dateEl.addEventListener("click", () => { try { dateEl.showPicker(); } catch (_) {} });
   dateEl.addEventListener("change", () => { if (dateEl.value) { cashTabDate = dateEl.value; cashTabEditing = {}; renderCashTab(true); } });
   $("cashRefresh").addEventListener("click", () => renderCashTab(true));
+  if ($("cashDupMerge")) $("cashDupMerge").addEventListener("click", (e) => run(e.currentTarget, async () => {
+    if (!confirm("Keep the latest entry of each, and move the others into its edit history?")) return;
+    for (const g of cashDuplicateGroups(D.rawCounts || [])) {
+      const w = cashMergedRecord(g.latest, g.others), id = w.id; delete w.id;
+      await fsDb.collection("cashCounts").doc(String(id)).set(w);
+      for (const o of g.others) await fsDb.collection("cashCounts").doc(String(o.id)).delete();
+    }
+  }));
   const readDenoms = (prefix) => { const o = {}; el.querySelectorAll(`.cash-denom[data-prefix="${prefix}"]`).forEach(i => { o[i.dataset.denom] = i.value; }); return o; };
   const liveTotals = () => {
     ["opening", "closing"].forEach(prefix => { const t = $(prefix + "Total"); if (t) t.textContent = fmtMoney(cashDenomTotal(readDenoms(prefix))); });
@@ -2656,7 +2741,7 @@ async function renderCashTab(force){
    Saved in cashCounts as types boxMorning / boxNight / boxOwner -- the same records and rules as the Cash Register. */
 function changeBoxCompute(all, dateStr, cashSales){
   const ts = (r) => (r && r.savedAt) || 0;
-  const on = (d, t) => all.find(c => c.date === d && c.type === t);
+  const on = (d, t) => cashLatestOnly(all.filter(c => c.date === d)).find(c => c.type === t);
   const dOpen = on(dateStr, "opening"), dClose = on(dateStr, "closing"), bM = on(dateStr, "boxMorning"), bN = on(dateStr, "boxNight");
   const owners = all.filter(c => c.type === "boxOwner");
   const sum = (list) => list.reduce((a, c) => a + (c.net || 0), 0);
