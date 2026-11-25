@@ -576,6 +576,7 @@ const PHONE_FEATURES = [
   { key: "cashOwner",         label: "Cash: owner Taken out / Put in",                            levels: ["hidden", "edit"],         roles: ["admin"] },
   { key: "analytics",         label: "Analytics tab",                                             levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
   { key: "hourly",            label: "Analytics: Hourly Performance",                             levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
+  { key: "dayCmp",            label: "Analytics: Day comparison",                                 levels: ["hidden", "show"],         roles: ["staff", "admin", "mall_admin"] },
   { key: "attendance",        label: "Attendance tab (own Clock In / Out; Admin: day view + marks)", levels: ["hidden", "show"],      roles: ["staff", "admin"] },
   { key: "staffProfiles",     label: "Staff tab (staff profiles + documents)",                    levels: ["hidden", "show"],         roles: ["admin"] },
   { key: "usbPrint",          label: "USB printer: print receipts from this phone (OTG cable)",   levels: ["hidden", "show"],         roles: ["staff", "admin"] },
@@ -589,6 +590,7 @@ function phoneAccessBuiltIn(kind, key, cfg, mallVisible){
     const tabPath = { operations: "operations.enabled", receipts: "receipts.enabled", mdshare: "mdshare.enabled", analytics: "analytics.enabled" }[key];
     if (tabPath) return mallVisible ? (mallVisible(tabPath, false) ? "show" : "hidden") : "show";
     if (key === "hourly") return (mallVisible && mallVisible("analytics.hourlyPerformance", true)) ? "show" : "hidden";
+    if (key === "dayCmp") return (mallVisible && mallVisible("analytics.dayComparison", true)) ? "show" : "hidden"; // Mall Admin: only if "dayComparison": true in the visibility file
     return "hidden";
   }
   if (kind === "staff") return (key === "queue" || key === "book" || key === "attendance" || key === "usbPrint") ? "show" : "hidden"; // JCT: own clock-in + USB printing (still needs the switch on)
@@ -601,7 +603,7 @@ function phoneAccessBuiltIn(kind, key, cfg, mallVisible){
     case "revenueShare": return apt.revenueShare ? "show" : "hidden";
     case "mdshare": return (apt.dailySummary || apt.revenueShare) ? "show" : "hidden";
     case "cash": case "cashOwner": return apt.cashRegister ? "edit" : "hidden";
-    case "analytics": case "hourly": return apt.analytics ? "show" : "hidden";
+    case "analytics": case "hourly": case "dayCmp": return apt.analytics ? "show" : "hidden";
     default: return "hidden";
   }
 }
@@ -853,7 +855,7 @@ async function buildApp(){
 
   unsubs.push(fsDb.collection("meta").doc("config").onSnapshot(doc => {
     const config = (doc.data() || {}).value || {}; // stored as {key:"config", value:{...}}, not flat
-    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false, phoneAccess: config.phoneAccess || {}, phoneHistoryMin: config.phoneHistoryMin || 30, androidShareMax: config.androidShareMax || 30, tagline: config.tagline || "", businessAddress: config.businessAddress || "", businessPhone: config.businessPhone || "", printerWidthMM: config.printerWidthMM || 80, phonePrintEnabled: config.phonePrintEnabled, phonePrintAuto: config.phonePrintAuto !== false };
+    liveConfig = { chairOrder: config.chairOrder || [], disabledUnits: config.disabledUnits || [], unitTypes: config.unitTypes || {}, staff: config.staff || [], businessName: config.businessName || "RRG Lounge", mdSharePercent: (typeof config.mdSharePercent === "number") ? config.mdSharePercent : 30, gstEnabled: !!config.gstEnabled, gstRate: config.gstRate || 18, mdName: config.mdName || "", packages: config.packages || {}, paymentMethods: config.paymentMethods || [], defaultPaymentMethod: config.defaultPaymentMethod || "UPI", invoicePrefix: config.invoicePrefix || "RRG", gstin: config.gstin || "", mobileBookingEnabled: !!config.mobileBookingEnabled, timesUpAlertRules: config.timesUpAlertRules || [], adminPhoneTools: config.adminPhoneTools || {}, hrPunch: config.hrPunch || {}, shopHours: config.shopHours || null, changeBoxEnabled: config.changeBoxEnabled !== false, phoneAccess: config.phoneAccess || {}, phoneHistoryMin: config.phoneHistoryMin || 30, dayCmp: config.dayCmp || null, androidShareMax: config.androidShareMax || 30, tagline: config.tagline || "", businessAddress: config.businessAddress || "", businessPhone: config.businessPhone || "", printerWidthMM: config.printerWidthMM || 80, phonePrintEnabled: config.phonePrintEnabled, phonePrintAuto: config.phonePrintAuto !== false };
     const nameEl = document.getElementById("userNameLabel");
     if (nameEl) nameEl.textContent = currentStaffName(); // re-check now that the staff directory has loaded
     refreshTabBar(); // Book tab can appear/disappear live if mobileBookingEnabled is toggled
@@ -3468,6 +3470,181 @@ function isExplicitlyOn(path){
   return node === true;
 }
 
+/* ---------------------- Day comparison (Analytics) -- 22 Nov 2026 ----------------------
+   Lines like Sales Trend. Views: "4 weeks" (Week 1-4 of a month, x = Mon..Sun), "3 months" and "This year"
+   (x = Mon..Sun four times, shaded Week 1-4 bands), "3 years" (x = Jan..Dec, month totals).
+   Overall / Weekdays / Weekend filter; Revenue or Sessions; Excel + PDF of exactly what is shown.
+   Week 1 starts on the month's first Monday (4 weeks = 28 days; days outside them are not in the week views).
+   Revenue = collected sales, the same figure as Sales Trend. Settings: CONFIG/liveConfig.dayCmp
+   { view, measure, periods (2-4), greyOthers }. Same code on the dashboard and the phone page. */
+const DC_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DC_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DC_COL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"], DC_GREY = "#a8a69e", DC_DASH = ["", "7 5", "2 4", "10 4 2 4"];
+const DC_BAND = ["rgba(42,120,214,0.08)", "rgba(235,104,52,0.08)", "rgba(27,175,122,0.08)", "rgba(237,161,0,0.10)"], DC_BANDTXT = ["#2a78d6", "#d0571f", "#139a6a", "#b77b00"];
+let dcState = null;
+function dcCfg(){ const c = (typeof CONFIG !== "undefined" && CONFIG) ? CONFIG : (typeof liveConfig !== "undefined" ? liveConfig : {}); return Object.assign({ view: "w", measure: "rev", periods: 3, greyOthers: true }, c.dayCmp || {}); }
+function dcInitState(){
+  if (dcState) return;
+  const c = dcCfg(), t = new Date();
+  dcState = { view: c.view, measure: c.measure, day: "all", year: t.getFullYear(), month: t.getMonth(), hidden: {} };
+}
+function dcIso(y, m, d){ const x = new Date(y, m, d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); }
+function dcFirstMonday(y, m){ const d = new Date(y, m, 1).getDay(); return 1 + ((8 - d) % 7); }
+function dcKeep(i){ return dcState.day === "all" || (dcState.day === "wd" && i < 5) || (dcState.day === "we" && i >= 5); }
+function dcDaily(){
+  const rev = (typeof dailyCollectedSales === "function" ? dailyCollectedSales() : dailyCollectedSalesMS());
+  const src = typeof allSessionsCache !== "undefined" ? allSessionsCache : mallShareSessions;
+  const map = {};
+  rev.forEach(d => { map[d.date] = { rev: d.rev, ses: 0 }; });
+  src.forEach(s => { if (!s.date || s.gapFiller || !(collectedAmount(s) > 0)) return; (map[s.date] || (map[s.date] = { rev: 0, ses: 0 })).ses++; });
+  return map;
+}
+function dcVal(map, iso, today){ if (iso > today) return null; const r = map[iso]; return r ? Math.round(dcState.measure === "rev" ? r.rev : r.ses) : 0; }
+function dcRange(y, m, w){ const f = dcFirstMonday(y, m) + (w - 1) * 7, a = new Date(y, m, f), b = new Date(y, m, f + 6); return `${a.getDate()} ${DC_MON[a.getMonth()]}\u2013${b.getDate()} ${DC_MON[b.getMonth()]}`; }
+// Everything the chart and the exports show: labels, week bands, series of points
+function dcBuild(){
+  const c = dcCfg(), map = dcDaily(), today = dcIso(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+  const y = dcState.year, m = dcState.month, days = [0, 1, 2, 3, 4, 5, 6].filter(dcKeep), per = Math.max(2, Math.min(4, parseInt(c.periods, 10) || 3));
+  const out = { labels: [], bandPer: 0, series: [], unit: dcState.measure === "rev" ? "rev" : "ses" };
+  const weekPoints = (yy, mm) => { const pts = []; for (let w = 1; w <= 4; w++) days.forEach(i => { const iso = dcIso(yy, mm, dcFirstMonday(yy, mm) + (w - 1) * 7 + i); pts.push({ v: dcVal(map, iso, today), date: iso, week: w, day: DC_DAYS[i] }); }); return pts; };
+  if (dcState.view === "w") {
+    out.labels = days.map(i => DC_DAYS[i]);
+    for (let w = 1; w <= 4; w++) out.series.push({ name: `Week ${w}`, sub: dcRange(y, m, w), color: DC_COL[w - 1], dash: DC_DASH[w - 1],
+      points: days.map(i => { const iso = dcIso(y, m, dcFirstMonday(y, m) + (w - 1) * 7 + i); return { v: dcVal(map, iso, today), date: iso, week: w, day: DC_DAYS[i] }; }) });
+  } else if (dcState.view === "m" || dcState.view === "y") {
+    for (let w = 1; w <= 4; w++) days.forEach(i => out.labels.push(DC_DAYS[i]));
+    out.bandPer = days.length;
+    const months = [];
+    if (dcState.view === "m") for (let k = 0; k < per; k++) { const d = new Date(y, m - k, 1); months.push([d.getFullYear(), d.getMonth()]); }
+    else for (let mm = m; mm >= 0; mm--) months.push([y, mm]);
+    months.forEach(([yy, mm], k) => out.series.push({ name: `${DC_MON[mm]}${yy !== y ? " " + yy : ""}`, color: dcState.view === "m" ? DC_COL[k] : (k === 0 || !c.greyOthers ? DC_COL[k % 4] : DC_GREY),
+      dash: dcState.view === "m" ? DC_DASH[k] : "", thin: dcState.view === "y" && k > 0 && c.greyOthers, points: weekPoints(yy, mm) }));
+  } else {
+    out.labels = DC_MON.slice();
+    for (let k = 0; k < per; k++) {
+      const yy = y - k;
+      out.series.push({ name: String(yy), color: DC_COL[k], dash: DC_DASH[k], points: DC_MON.map((_, mm) => {
+        let sum = 0, any = false; const last = new Date(yy, mm + 1, 0).getDate();
+        if (dcIso(yy, mm, 1) > today) return { v: null, month: DC_MON[mm] };
+        for (let d = 1; d <= last; d++) { const iso = dcIso(yy, mm, d), wd = (new Date(yy, mm, d).getDay() + 6) % 7; if (!dcKeep(wd)) continue; const v = dcVal(map, iso, today); if (v != null) { sum += v; if (map[iso]) any = true; } }
+        return { v: any ? sum : null, month: DC_MON[mm] }; }) });
+    }
+  }
+  out.series.forEach(s => { s.total = s.points.reduce((a, p) => a + (p.v || 0), 0); });
+  return out;
+}
+function dcFmt(v, unit){ return v == null ? "\u2014" : unit === "rev" ? "\u20b9" + Math.round(v).toLocaleString("en-IN") : `${Math.round(v)} session${Math.round(v) === 1 ? "" : "s"}`; }
+function dcTitle(view){ return { w: "4 weeks", m: "3 months", y: "This year (months)", yy: "3 years" }[view]; }
+function initDayComparisonPanel(){
+  const el = document.getElementById("dayCmpPanel"); if (!el) return;
+  dcInitState();
+  const c = dcCfg(), per = Math.max(2, Math.min(4, parseInt(c.periods, 10) || 3)), S = dcState, nowY = new Date().getFullYear();
+  const btn = (cls, key, cur, label) => `<button class="btn btn-small ${key === cur ? "btn-primary" : "btn-outline"} ${cls}" data-k="${key}">${label}</button>`;
+  el.innerHTML = `<div class="panel-title">Day comparison</div>
+    <div class="filter-row" style="gap:6px; flex-wrap:wrap;">
+      <select id="dcYear">${[nowY, nowY - 1, nowY - 2].map(y => `<option value="${y}" ${y === S.year ? "selected" : ""}>${y}</option>`).join("")}</select>
+      ${S.view === "yy" ? "" : `<select id="dcMonth">${DC_MON.map((n, i) => `<option value="${i}" ${i === S.month ? "selected" : ""}>${n}</option>`).join("")}</select>`}
+      ${btn("dc-day", "all", S.day, "Overall")}${btn("dc-day", "wd", S.day, "Weekdays")}${btn("dc-day", "we", S.day, "Weekend")}
+    </div>
+    <div class="filter-row" style="gap:6px; flex-wrap:wrap; margin-top:6px;">
+      ${btn("dc-view", "w", S.view, "4 weeks")}${btn("dc-view", "m", S.view, per === 3 ? "3 months" : per + " months")}${btn("dc-view", "y", S.view, "This year")}${btn("dc-view", "yy", S.view, per === 3 ? "3 years" : per + " years")}
+      <span style="flex:1"></span>${btn("dc-ms", "rev", S.measure, "Revenue")}${btn("dc-ms", "ses", S.measure, "Sessions")}
+      <button class="btn btn-small btn-outline" id="dcExcel">Excel</button><button class="btn btn-small btn-outline" id="dcPdf">PDF</button>
+    </div>
+    <div id="dcLegend" style="display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12px; margin:8px 0 4px;"></div>
+    <div id="dcChart" style="position:relative; width:100%;"></div>
+    <div class="panel-help" style="margin-top:6px;">${S.view === "yy" ? "Each point = that month's total (only the chosen days)." : "Week 1 starts on the month's first Monday. Hover or tap a dot for the week, the day and the value."}</div>`;
+  const rerender = () => initDayComparisonPanel();
+  el.querySelectorAll(".dc-day").forEach(b => b.addEventListener("click", () => { S.day = b.dataset.k; rerender(); }));
+  el.querySelectorAll(".dc-view").forEach(b => b.addEventListener("click", () => { S.view = b.dataset.k; S.hidden = {}; rerender(); }));
+  el.querySelectorAll(".dc-ms").forEach(b => b.addEventListener("click", () => { S.measure = b.dataset.k; rerender(); }));
+  el.querySelector("#dcYear").addEventListener("change", (e) => { S.year = +e.target.value; S.hidden = {}; rerender(); });
+  const mSel = el.querySelector("#dcMonth"); if (mSel) mSel.addEventListener("change", (e) => { S.month = +e.target.value; S.hidden = {}; rerender(); });
+  const data = dcBuild();
+  el.querySelector("#dcLegend").innerHTML = data.series.map((s, k) => `<span class="dc-leg" data-k="${k}" style="display:inline-flex; align-items:center; gap:5px; cursor:${S.view === "y" ? "pointer" : "default"}; opacity:${S.hidden[k] ? 0.35 : 1};">
+    <svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="${s.color}" stroke-width="2.5" ${s.dash ? `stroke-dasharray="${s.dash}"` : ""}/></svg>${escapeHtml(s.name)}${s.sub ? ` <span style="opacity:0.6;">(${s.sub})</span>` : ""} <span style="opacity:0.7;">\u00b7 ${dcFmt(s.total, data.unit)}</span></span>`).join("");
+  if (S.view === "y") el.querySelectorAll(".dc-leg").forEach(x => x.addEventListener("click", () => { S.hidden[x.dataset.k] = !S.hidden[x.dataset.k]; rerender(); }));
+  dcDraw(el.querySelector("#dcChart"), data);
+  el.querySelector("#dcExcel").addEventListener("click", () => dcExport("xlsx", data));
+  el.querySelector("#dcPdf").addEventListener("click", () => dcExport("pdf", data));
+}
+function dcDraw(box, data){
+  const shown = data.series.filter((s, k) => !dcState.hidden[k]);
+  const vals = []; shown.forEach(s => s.points.forEach(p => { if (p.v != null) vals.push(p.v); }));
+  if (!vals.length) { box.innerHTML = `<p class="panel-help" style="padding:30px 0; text-align:center;">No sales in this selection yet.</p>`; return; }
+  const W = 1000, H = 320, padL = 64, padR = 14, padT = data.bandPer ? 30 : 14, padB = 30, n = data.labels.length;
+  let hi = Math.max(...vals), lo = 0; if (hi <= 0) hi = 1;
+  const raw = hi / 4, mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag, step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag; hi = Math.ceil(hi / step) * step;
+  const x = (i) => n === 1 ? (padL + W - padR) / 2 : padL + i * (W - padL - padR) / (n - 1);
+  const y = (v) => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
+  const half = n > 1 ? (W - padL - padR) / (n - 1) / 2 : 20;
+  let svg = "";
+  if (data.bandPer) for (let w = 0; w < 4; w++) {
+    const L = w === 0 ? padL : x(w * data.bandPer) - half, R = w === 3 ? W - padR : x((w + 1) * data.bandPer) - half;
+    svg += `<rect x="${L.toFixed(1)}" y="${padT - 18}" width="${(R - L).toFixed(1)}" height="${H - padB - padT + 18}" fill="${DC_BAND[w]}"/>`;
+    if (w) svg += `<line x1="${L.toFixed(1)}" x2="${L.toFixed(1)}" y1="${padT - 18}" y2="${H - padB}" stroke="currentColor" stroke-opacity="0.25" stroke-dasharray="3 3"/>`;
+    svg += `<text x="${((L + R) / 2).toFixed(1)}" y="${padT - 5}" text-anchor="middle" font-size="13" font-weight="600" fill="${DC_BANDTXT[w]}">Week ${w + 1}</text>`;
+  }
+  for (let v = 0; v <= hi + 1e-9; v += step) svg += `<line x1="${padL}" x2="${W - padR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="currentColor" stroke-opacity="0.12"/><text x="${padL - 6}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" font-size="12" fill="currentColor" fill-opacity="0.65">${data.unit === "rev" ? "\u20b9" + (v >= 1000 ? Math.round(v / 1000) + "k" : Math.round(v)) : Math.round(v)}</text>`;
+  data.labels.forEach((l, i) => { if (n > 14 && dcState.view !== "yy" && i % 1) return; svg += `<text x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="${n > 14 ? 10 : 12}" fill="currentColor" fill-opacity="0.7">${n > 14 ? l.slice(0, 2) : l}</text>`; });
+  data.series.forEach((s, k) => {
+    if (dcState.hidden[k]) return;
+    let d = "", pen = false;
+    s.points.forEach((p, i) => { if (p.v == null) { pen = false; return; } d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(p.v).toFixed(1)} `; pen = true; });
+    svg += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.thin ? 1.4 : 2.6}" stroke-linejoin="round" stroke-linecap="round" ${s.dash ? `stroke-dasharray="${s.dash}"` : ""}/>`;
+    s.points.forEach((p, i) => { if (p.v != null) svg += `<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${s.thin ? 2.5 : 3.6}" fill="${s.color}"/>`; });
+  });
+  for (let i = 0; i < n; i++) svg += `<rect class="dc-hit" data-i="${i}" x="${(x(i) - half).toFixed(1)}" y="${padT}" width="${(half * 2).toFixed(1)}" height="${H - padT - padB}" fill="transparent"/>`;
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; display:block; color:var(--text, currentColor);" role="img" aria-label="Day comparison chart">${svg}<line id="dcCross" x1="0" x2="0" y1="${padT}" y2="${H - padB}" stroke="currentColor" stroke-opacity="0" /></svg>
+    <div id="dcTip" style="position:absolute; display:none; pointer-events:none; background:var(--panel, #222); color:var(--text, #fff); border:1px solid rgba(128,128,128,0.4); border-radius:8px; padding:6px 9px; font-size:12px; line-height:1.5; z-index:5; white-space:nowrap;"></div>`;
+  const tip = box.querySelector("#dcTip"), cross = box.querySelector("#dcCross"), svgEl = box.querySelector("svg");
+  const show = (i) => {
+    const sample = (data.series.find((s, k) => !dcState.hidden[k]) || data.series[0]).points[i];
+    let title;
+    if (dcState.view === "w") title = data.labels[i];
+    else if (dcState.view === "yy") title = data.labels[i];
+    else title = `Week ${sample.week} \u00b7 ${sample.day}`;
+    tip.innerHTML = `<b>${title}</b><br>` + data.series.map((s, k) => dcState.hidden[k] ? "" : `<span style="color:${s.color};">\u25cf</span> ${escapeHtml(s.name)}${s.sub ? ` (${s.sub})` : ""}${s.points[i].date && dcState.view !== "yy" ? ` <span style="opacity:0.6;">${s.points[i].date.slice(8)}/${s.points[i].date.slice(5, 7)}</span>` : ""}: <b>${dcFmt(s.points[i].v, data.unit)}</b>`).filter(Boolean).join("<br>");
+    tip.style.display = "block";
+    const r = svgEl.getBoundingClientRect(), px = x(i) / W * r.width;
+    tip.style.left = Math.max(0, Math.min(px + 12, r.width - tip.offsetWidth - 4)) + "px"; tip.style.top = "8px";
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("stroke-opacity", "0.35");
+  };
+  box.querySelectorAll(".dc-hit").forEach(h => { const i = +h.dataset.i; h.addEventListener("mouseenter", () => show(i)); h.addEventListener("click", () => show(i)); });
+  svgEl.addEventListener("mouseleave", () => { tip.style.display = "none"; cross.setAttribute("stroke-opacity", "0"); });
+}
+// Excel / PDF of exactly what is shown (filters, view, measure); phone -> Share sheet, dashboard -> download
+function dcRows(data){
+  const head = ["Point"].concat(data.series.map(s => s.name + (s.sub ? ` (${s.sub})` : "")));
+  const rows = data.labels.map((l, i) => {
+    const p0 = data.series[0].points[i];
+    const label = dcState.view === "w" ? l : dcState.view === "yy" ? l : `Week ${p0.week} ${p0.day}`;
+    return [label].concat(data.series.map(s => s.points[i].v == null ? "" : s.points[i].v));
+  });
+  rows.push(["Total"].concat(data.series.map(s => s.total)));
+  return { head, rows };
+}
+async function dcExport(kind, data){
+  const S = dcState, dayTxt = { all: "Overall", wd: "Weekdays", we: "Weekend" }[S.day];
+  const what = `${dcTitle(S.view)} \u00b7 ${S.view === "yy" ? S.year : DC_MON[S.month] + " " + S.year} \u00b7 ${dayTxt} \u00b7 ${S.measure === "rev" ? "Revenue (\u20b9)" : "Sessions"}`;
+  const fname = `Day_comparison_${S.view}_${S.year}${S.view === "yy" ? "" : "-" + String(S.month + 1).padStart(2, "0")}_${dayTxt}_${S.measure === "rev" ? "Revenue" : "Sessions"}`;
+  const { head, rows } = dcRows(data);
+  if (kind === "xlsx") {
+    const ws = XLSX.utils.aoa_to_sheet([["Day comparison"], [what], [], head].concat(rows));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Day comparison");
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    if (typeof shareOrDownloadFile === "function") await shareOrDownloadFile(blob, fname + ".xlsx", blob.type); else XLSX.writeFile(wb, fname + ".xlsx");
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ compress: true, unit: "mm", format: "a4", orientation: rows.length > 14 || head.length > 5 ? "landscape" : "portrait" });
+  doc.setFontSize(14); doc.text("Day comparison", 14, 14); doc.setFontSize(9); doc.text(what.replace(/\u20b9/g, "Rs."), 14, 20);
+  const fmtCell = (v) => v === "" ? "-" : (S.measure === "rev" ? "Rs." + Math.round(v).toLocaleString("en-IN") : String(v));
+  doc.autoTable({ startY: 25, head: [head], body: rows.map(r => [r[0]].concat(r.slice(1).map(fmtCell))), styles: { fontSize: 8 }, headStyles: { fillColor: [30, 30, 30], textColor: [230, 190, 80] } });
+  if (typeof shareOrDownloadFile === "function") await shareOrDownloadFile(doc.output("blob"), fname + ".pdf", "application/pdf"); else doc.save(fname + ".pdf");
+}
+
 // ---- Sales Trend ----
 let salesTrendRange = "1M";
 const SALES_TREND_RANGES = [["1W", "1W"], ["1M", "1M"], ["3M", "3M"], ["6M", "6M"], ["1Y", "1Y"], ["ALL", "All"]];
@@ -3717,8 +3894,10 @@ async function renderAnalyticsTab(){
   const salesTrendPanelHtml = (showAll || isExplicitlyOn("analytics.salesTrend")) ? `<div class="panel" id="salesTrendPanel"></div>` : "";
   const relaxedPanelHtml = (showAll || isExplicitlyOn("analytics.customersRelaxed")) ? `<div class="panel" id="customersRelaxedPanel"></div>` : "";
   const hourlyPanelHtml = phoneAccess("hourly") !== "hidden" ? `<div class="panel" id="hourlyPerfPanel"></div>` : "";
-  el.innerHTML = (revenuePanel + salesTrendPanelHtml + relaxedPanelHtml + hourlyPanelHtml + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
+  const dayCmpPanelHtml = phoneAccess("dayCmp") !== "hidden" ? `<div class="panel" id="dayCmpPanel"></div>` : ""; // Day comparison (Admin; Mall Admin only if switched on)
+  el.innerHTML = (revenuePanel + salesTrendPanelHtml + dayCmpPanelHtml + relaxedPanelHtml + hourlyPanelHtml + monthlyPanel) || `<p class="panel-help">No analytics sections are currently visible.</p>`;
   initSalesTrendPanel();
+  initDayComparisonPanel();
   initCustomersRelaxedPanel();
   initHourlyPerformancePanel();
 }
