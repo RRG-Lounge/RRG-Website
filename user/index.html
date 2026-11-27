@@ -4473,7 +4473,7 @@ document.addEventListener("visibilitychange", () => {
 const ALOG = (() => {
   const IS_DASH = typeof CONFIG !== "undefined" && typeof liveConfig === "undefined";
   const PAGE = IS_DASH ? "dashboard" : "phone";
-  const DEF = { on: true, roles: "staff", keepDays: 30, keys: true, pingMin: 5, speedOnProblem: true, sendMin: 2, slowSec: 5, busyGuard: true, busyWarnSec: 10, showDetails: true };
+  const DEF = { on: true, roles: "staff", keepDays: 30, keys: true, pingMin: 5, speedOnProblem: true, sendMin: 2, slowSec: 5, busyGuard: true, busyWarnSec: 10, showDetails: true, jobMs: 300 };
   const cfg = () => { try { return Object.assign({}, DEF, ((IS_DASH ? CONFIG : liveConfig) || {}).actLog || {}); } catch (e) { return DEF; } };
   const who = () => {
     try {
@@ -4491,7 +4491,7 @@ const ALOG = (() => {
   const day = (t) => { const d = new Date(t); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
   let buf = [], lastTab = "";
   function log(k, d){ try { if (!active()) return; buf.push([Date.now(), k, d || {}]); if (buf.length >= 500) saveLocal(); } catch (e) {} }
-  const PROBLEMS = ["jsError", "console", "saveFail", "slowSave", "freeze", "notSentOn", "offline", "dialogErr", "stillSaving", "pingFail"];
+  const PROBLEMS = ["jsError", "console", "saveFail", "slowSave", "freeze", "notSentOn", "offline", "dialogErr", "stillSaving", "pingFail", "slowJob"];
   // ---------- local store (IndexedDB) ----------
   let dbp = null;
   function idb(){ if (dbp) return dbp; dbp = new Promise((res, rej) => { try { const r = indexedDB.open("rrgActLog", 1); r.onupgradeneeded = () => { r.result.createObjectStore("chunks", { keyPath: "id" }); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }); return dbp; }
@@ -4576,8 +4576,11 @@ const ALOG = (() => {
   }
   const live = new Map(); let seq = 0;
   function groupNames(items){
-    const g = new Map(); items.forEach(n => { const x = g.get(n.key) || { label: n.label, amt: 0, methods: new Set(), important: n.important }; x.amt += n.amt || 0; if (n.method) x.methods.add(n.method); g.set(n.key, x); });
-    return [...g.values()].map(x => x.label + (cfg().showDetails !== false && (x.amt || x.methods.size) ? ` (${[x.amt ? money(x.amt) : "", [...x.methods].join("+")].filter(Boolean).join(", ")})` : ""));
+    // (26 Nov) amounts: each RECORD counted once with its latest amount (repeat saves of the same record are not added up);
+    // different records of one bill (2 chairs) still add up. Repeat saves are shown as "saving N times".
+    const g = new Map(); items.forEach(n => { const x = g.get(n.key) || { label: n.label, docs: new Map(), times: 0, methods: new Set(), important: n.important }; x.docs.set(n.doc || ("_" + x.docs.size), n.amt || 0); x.times++; if (n.method) x.methods.add(n.method); g.set(n.key, x); });
+    return [...g.values()].map(x => { const amt = [...x.docs.values()].reduce((a, b) => a + b, 0), rep = x.times > x.docs.size ? ` \u2014 saving ${x.times} times` : "";
+      return x.label + (cfg().showDetails !== false && (amt || x.methods.size) ? ` (${[amt ? money(amt) : "", [...x.methods].join("+")].filter(Boolean).join(", ")})` : "") + rep; });
   }
   const cap = (t) => t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
   // Registry of important saves not yet confirmed by Firebase -- kept in localStorage so it survives a reload;
@@ -4585,8 +4588,8 @@ const ALOG = (() => {
   const REG = "rrgUnsent";
   const regGet = () => { try { return JSON.parse(localStorage.getItem(REG) || "{}"); } catch (e) { return {}; } };
   const regPut = (r) => { try { localStorage.setItem(REG, JSON.stringify(r)); } catch (e) {} };
-  function regAdd(n){ const r = regGet(), e = r[n.key] || { label: n.label, amt: 0, method: "", n: 0, t: Date.now() }; e.n++; e.amt = (e.amt || 0) + (n.amt || 0); if (n.method) e.method = n.method; e.label = n.label; r[n.key] = e; regPut(r); }
-  function regDone(n){ const r = regGet(), e = r[n.key]; if (!e) return; e.n--; e.amt = Math.max(0, (e.amt || 0) - (n.amt || 0)); if (e.n <= 0) delete r[n.key]; regPut(r); }
+  function regAdd(n){ const r = regGet(), e = r[n.key] || { label: n.label, amt: 0, method: "", n: 0, t: Date.now(), d: {} }; e.n++; e.d = e.d || {}; e.d[n.doc || "_"] = n.amt || 0; e.amt = Object.values(e.d).reduce((a, b) => a + b, 0); if (n.method) e.method = n.method; e.label = n.label; r[n.key] = e; regPut(r); }
+  function regDone(n){ const r = regGet(), e = r[n.key]; if (!e) return; e.n--; if (e.n <= 0) delete r[n.key]; regPut(r); }
   function regList(){ const r = regGet(); return Object.keys(r).map(k => { const e = r[k], d = new Date(e.t); return `${cap(e.label)}${cfg().showDetails !== false && (e.amt || e.method) ? ` (${[e.amt ? money(e.amt) : "", e.method].filter(Boolean).join(", ")})` : ""}, saved ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }); }
   function regClearBefore(t){ const r = regGet(); Object.keys(r).forEach(k => { if (r[k].t < t) delete r[k]; }); regPut(r); }
   function pendingText(){ const now = groupNames([...live.values()].filter(n => n.important)); const old = regList().filter(x => !now.some(y => x.toLowerCase().startsWith(y.toLowerCase().split(" (")[0]))); return now.concat(old).slice(0, 4).join("; "); }
@@ -4627,7 +4630,7 @@ const ALOG = (() => {
     try {
       const dr = db.collection("__alog").doc("x"), proto = Object.getPrototypeOf(dr);
       if (proto && proto !== Object.prototype && !proto.__alogWrapped) {
-        ["set", "update", "delete"].forEach(m => { const o = proto[m]; if (typeof o !== "function") return; proto[m] = function(data){ const path = this.path || (this.c + "/" + this.id); return track(o.apply(this, arguments), `${path} (${m})`, nameOf(path, m === "delete" ? null : data, m)); }; });
+        ["set", "update", "delete"].forEach(m => { const o = proto[m]; if (typeof o !== "function") return; proto[m] = function(data){ const path = this.path || (this.c + "/" + this.id); return track(o.apply(this, arguments), `${path} (${m})`, Object.assign(nameOf(path, m === "delete" ? null : data, m), { doc: path })); }; });
         proto.__alogWrapped = true;
       }
       const b = db.batch && db.batch(), bp = b && Object.getPrototypeOf(b);
@@ -4638,21 +4641,30 @@ const ALOG = (() => {
       if (typeof db.runTransaction === "function" && !db.__alogTx) { const o = db.runTransaction.bind(db); db.runTransaction = function(){ return track(o.apply(null, arguments), "transaction", { key: "billno", label: "new bill number" }); }; db.__alogTx = true; }
     } catch (e) {}
   }
+  const guardMap = {};
   const ACTION_RX = /^(checkout|save|collect|pay|print|start|confirm|recount|download backup|cash|upi|card|book|submit|merge|lock|delete entry|add expense|record)/i;
   function guardClick(e){
     try {
       const b = e.target.closest && e.target.closest("button"); if (!b || !cfg().busyGuard) return;
       const label = (b.textContent || "").trim();
-      if (!ACTION_RX.test(label) && b.id !== "checkoutBtn" && b.id !== "bookCheckoutBtn") return;
-      const until = parseInt(b.dataset.alogBusy || "0", 10);
-      if (until > Date.now()) { e.stopImmediatePropagation(); e.preventDefault(); log("repeatIgnored", { b: label.slice(0, 40), id: b.id || "" }); return; }
-      // Block repeats only while a save started by THIS press is still running (+ 0.2 s for real double-clicks).
-      // A press that saved nothing (e.g. a form refused with a message) doesn't block the next press.
-      const before = inflight, start = Date.now(); b.dataset.alogBusy = String(start + 200); b.style.cursor = "progress";
+      // (27 Nov) no list of names: ANY button whose press starts a save is held until that save is confirmed. Buttons
+      // that only change the screen (tabs, filters) never start a save, so they're never held; "+ 10m" package buttons
+      // (pressed twice on purpose for 2 chairs) and tabs are left alone completely.
+      if (/^[+\u2212-]/.test(label) || b.classList.contains("tab") || b.closest(".tab")) return;
+      // (26 Nov) The guard is per ACTION (button text + its section), not per button: the screen often redraws the
+      // section after a press, giving a fresh button. Repeats are blocked while a save started by the first press is
+      // still running (however long that takes, up to 10 min), plus 0.2 s for real double-clicks.
+      const panel = b.closest(".panel"), sect = panel ? ((panel.querySelector(".panel-title") || {}).textContent || "").trim() : "";
+      // same-named buttons in different rows (e.g. a "Save" per staff member) are different actions: add the button's position
+      const same = panel ? [...panel.querySelectorAll("button")].filter(x => (x.textContent || "").trim() === label) : [b];
+      const akey = label + "|" + sect + "|" + Math.max(0, same.indexOf(b)) + "|" + (b.id || "") + "|" + Object.values(b.dataset || {}).filter(v => !/^\d{10,}$/.test(v)).join(","), busy = guardMap[akey];
+      if (busy && (busy.running || (busy.el === b && busy.until > Date.now()))) { e.stopImmediatePropagation(); e.preventDefault(); log("repeatIgnored", { b: label.slice(0, 40), id: b.id || "", s: sect.slice(0, 30) }); flash(`Still saving \u2014 please wait (${label.slice(0, 30)} was already pressed)`); return; }
+      const beforeSeq = seq, start = Date.now(); guardMap[akey] = { until: start + 200, el: b, running: false }; b.style.cursor = "progress";
       const iv = setInterval(() => {
-        const running = inflight > before, age = Date.now() - start;
-        if ((age >= 200 && !running) || age > 15000) { clearInterval(iv); b.dataset.alogBusy = "0"; b.style.opacity = ""; b.style.cursor = ""; }
-        else { b.dataset.alogBusy = String(Date.now() + 400); if (running) b.style.opacity = "0.6"; }
+        let running = false; live.forEach((v, tok) => { if (tok > beforeSeq) running = true; });
+        const age = Date.now() - start;
+        if ((age >= 200 && !running) || age > 600000) { clearInterval(iv); delete guardMap[akey]; b.style.opacity = ""; b.style.cursor = ""; }
+        else { guardMap[akey] = { until: start + 200, el: b, running }; if (running) b.style.opacity = "0.6"; }
       }, 100);
     } catch (x) {}
   }
